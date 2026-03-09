@@ -124,4 +124,42 @@ public:
     /** List all available BT node classes (composites, tasks, decorators, services) */
     UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
     static FString ListBTNodeClasses();
+
+    // ─── Blueprint Graph Helpers ──────────────────────────────────────────
+
+    /** Get the full graph info (all nodes, pins, connections) for a Blueprint graph */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString GetBlueprintGraphInfo(UBlueprint* Blueprint, const FString& GraphName);
+
+    /** List callable functions available in a Blueprint context */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString ListCallableFunctions(UBlueprint* Blueprint, const FString& Filter);
+
+    /** List all variables defined in a Blueprint */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString ListBlueprintVariables(UBlueprint* Blueprint);
+
+    /** Add a single node to a Blueprint graph from JSON description */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString AddBlueprintNode(UBlueprint* Blueprint, const FString& GraphName, const FString& NodeJson);
+
+    /** Connect two pins in a Blueprint graph */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString ConnectBlueprintPins(UBlueprint* Blueprint, const FString& GraphName,
+        const FString& SourceNodeName, const FString& SourcePinName,
+        const FString& TargetNodeName, const FString& TargetPinName);
+
+    /** Remove a node from a Blueprint graph */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString RemoveBlueprintNode(UBlueprint* Blueprint, const FString& GraphName,
+        const FString& NodeName);
+
+    /** Build a Blueprint graph from JSON adjacency list (nodes + connections) */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString BuildBlueprintGraph(UBlueprint* Blueprint, const FString& GraphName,
+        const FString& GraphJson);
+
+    /** Compile a Blueprint and return the result */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString CompileBlueprint(UBlueprint* Blueprint);
 };
