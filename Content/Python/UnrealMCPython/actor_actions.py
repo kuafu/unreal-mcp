@@ -95,7 +95,7 @@ def ue_select_all() -> str:
     """
     try:
         subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-        subsystem.select_all(unreal.EditorLevelLibrary.get_editor_world())
+        subsystem.select_all(unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world())
         return json.dumps({"success": True, "message": "All actors selected."})
     except Exception as e:
         return json.dumps({"success": False, "message": f"Error during selection: {e}"})
@@ -106,7 +106,7 @@ def ue_invert_selection() -> str:
     """
     try:
         subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-        subsystem.invert_selection(unreal.EditorLevelLibrary.get_editor_world())
+        subsystem.invert_selection(unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world())
         return json.dumps({"success": True, "message": "Actor selection inverted."})
     except Exception as e:
         return json.dumps({"success": False, "message": f"Error during selection inversion: {e}"})
@@ -164,7 +164,7 @@ def ue_list_all_with_locations() -> str:
 def ue_spawn_from_class(class_path: str = None, location: list = None, rotation: list = None) -> str:
     """
     Spawns an actor from the specified class path at the given location and rotation
-    using unreal.EditorLevelLibrary.spawn_actor_from_class.
+    using EditorActorSubsystem.spawn_actor_from_class.
     Wrapped in a ScopedEditorTransaction.
 
     :param class_path: Path to the actor class (e.g., "/Game/Blueprints/MyActorBP.MyActorBP_C" or "/Script/Engine.StaticMeshActor").
@@ -177,7 +177,7 @@ def ue_spawn_from_class(class_path: str = None, location: list = None, rotation:
     if location is None:
         return json.dumps({"success": False, "message": "Required parameter 'location' is missing."})
 
-    transaction_description = "MCP: Spawn Actor from Class (EditorLevelLibrary)"
+    transaction_description = "MCP: Spawn Actor from Class"
     if rotation is None:
         rotation = [0.0, 0.0, 0.0]
 
@@ -196,7 +196,7 @@ def ue_spawn_from_class(class_path: str = None, location: list = None, rotation:
             vec_location = unreal.Vector(float(location[0]), float(location[1]), float(location[2]))
             rot_rotation = unreal.Rotator(float(rotation[2]), float(rotation[0]), float(rotation[1]))
 
-            actor = unreal.EditorLevelLibrary.spawn_actor_from_class(
+            actor = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).spawn_actor_from_class(
                 actor_class,
                 vec_location,
                 rot_rotation
@@ -204,14 +204,14 @@ def ue_spawn_from_class(class_path: str = None, location: list = None, rotation:
 
             if actor:
                 return json.dumps({
-                    "success": True, 
-                    "actor_label": actor.get_actor_label(), 
+                    "success": True,
+                    "actor_label": actor.get_actor_label(),
                     "actor_path": actor.get_path_name()
                 })
             else:
-                return json.dumps({"success": False, "message": "Failed to spawn actor using EditorLevelLibrary.spawn_actor_from_class. The function returned None."})
+                return json.dumps({"success": False, "message": "Failed to spawn actor. The function returned None."})
     except Exception as e:
-        return json.dumps({"success": False, "message": f"Error during spawn_actor_from_class (EditorLevelLibrary): {str(e)}", "type": e.__name__, "traceback": traceback.format_exc()})
+        return json.dumps({"success": False, "message": f"Error during spawn_actor_from_class: {str(e)}", "type": e.__name__, "traceback": traceback.format_exc()})
 
 def ue_get_all_details() -> str:
     """
@@ -366,7 +366,7 @@ def ue_line_trace(
             trace_type_query = unreal.TraceTypeQuery.TRACE_TYPE_QUERY2
 
         hit_result = unreal.SystemLibrary.line_trace_single(
-            world_context_object=unreal.EditorLevelLibrary.get_editor_world(),
+            world_context_object=unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world(),
             start=start_loc,
             end=end_loc,
             trace_channel=trace_type_query,
@@ -462,7 +462,7 @@ def ue_spawn_on_surface_raycast(
             trace_type_query = unreal.TraceTypeQuery.TRACE_TYPE_QUERY2
 
         hit_result = unreal.SystemLibrary.line_trace_single(
-            world_context_object=unreal.EditorLevelLibrary.get_editor_world(),
+            world_context_object=unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world(),
             start=start_loc,
             end=end_loc,
             trace_channel=trace_type_query, 
@@ -514,7 +514,7 @@ def ue_spawn_on_surface_raycast(
                 actor_class = unreal.load_class(None, asset_or_class_path)
                 if not actor_class:
                     return json.dumps({"success": False, "message": f"Failed to load actor class: {asset_or_class_path}"})
-                actor_spawned = unreal.EditorLevelLibrary.spawn_actor_from_class(actor_class, spawn_location, spawn_rotation_final)
+                actor_spawned = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).spawn_actor_from_class(actor_class, spawn_location, spawn_rotation_final)
             else:
                 asset = unreal.EditorAssetLibrary.load_asset(asset_or_class_path)
                 if not asset:

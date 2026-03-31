@@ -16,7 +16,7 @@ def _split_asset_path(asset_path):
 def ue_set_game_mode(game_mode_class_path: str = None) -> str:
     """Sets the GameMode Override on the current level's World Settings."""
     try:
-        world = unreal.EditorLevelLibrary.get_editor_world()
+        world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
         if world is None:
             return json.dumps({"success": False, "message": "No editor world available."})
 

@@ -34,7 +34,7 @@ async def get_output_log(
         "Use print() to return results — if the output is valid JSON (starts with { or [), "
         "it will be parsed as structured data in the 'result' field. Otherwise raw text is returned. "
         "Useful for one-off operations, prototyping, or accessing UE APIs not covered by other tools. "
-        "Example: print(json.dumps({'world': unreal.EditorLevelLibrary.get_editor_world().get_name()}))"
+        "Example: print(json.dumps({'world': unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world().get_name()}))"
     ),
     tags={"unreal", "python", "execute", "utility", "scripting"}
 )

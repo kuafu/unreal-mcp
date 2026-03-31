@@ -1,9 +1,14 @@
 # Copyright (c) 2025 GenOrca. All Rights Reserved.
 
+import warnings
 import unreal
 import json
 import traceback
-from typing import List, Dict, Optional, Any # Modified import
+from typing import List, Dict, Optional, Any
+
+# Suppress DeprecationWarning for EditorLevelLibrary functions that have no
+# subsystem equivalent yet (replace_mesh_*, replace_selected_actors, refresh_all_level_editors).
+warnings.filterwarnings("ignore", message=".*EditorLevelLibrary.*deprecated.*", category=DeprecationWarning)
 
 def ue_get_selected_assets() -> str:
     """Gets the set of currently selected assets."""
@@ -57,7 +62,7 @@ def _get_component_material_paths(component: unreal.MeshComponent) -> List[str]:
 # Helper function to get actors by their paths
 def _get_actors_by_paths(actor_paths: List[str]) -> List[unreal.Actor]:
     actors = []
-    all_level_actors = unreal.EditorLevelLibrary.get_all_level_actors()
+    all_level_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors()
     for path in actor_paths:
         actor = next((a for a in all_level_actors if a.get_path_name() == path), None)
         if actor:
@@ -207,7 +212,7 @@ def ue_replace_mtl_on_selected(material_to_be_replaced_path: str, new_material_p
         material_to_replace = _load_material_interface(material_to_be_replaced_path)
         new_material = _load_material_interface(new_material_path)
         
-        selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
+        selected_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
         if not selected_actors:
             return json.dumps({"success": False, "message": "No actors selected."})
 
@@ -334,7 +339,7 @@ def ue_replace_mesh_on_selected(mesh_to_be_replaced_path: str, new_mesh_path: st
                     "error_type": "MeshToReplaceNotFound"
                 })
         
-        selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
+        selected_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
         if not selected_actors:
             return json.dumps({"success": True, "message": "No actors selected.", "changed_actors_count": 0, "changed_components_count": 0})
 
@@ -558,7 +563,7 @@ def ue_replace_selected_with_bp(blueprint_asset_path: str) -> str:
     import json
     import traceback
     try:
-        selected_actors = unreal.EditorLevelLibrary.get_selected_level_actors()
+        selected_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
         if not selected_actors:
             return json.dumps({"success": False, "message": "No actors selected."})
         # Check if the blueprint asset exists
