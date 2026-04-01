@@ -115,12 +115,24 @@ public:
 	{
 	}
 
+	/** Call before scope exits to record the execution outcome. */
+	void SetResult(bool bInSuccess, const FString& InMessage)
+	{
+		bHasResult = true;
+		bResultSuccess = bInSuccess;
+		ResultMessage = InMessage;
+	}
+
 	~FRequestLogScope();
 
 private:
 	FTelemetry* Telemetry = nullptr;
 	FString Data;
 	double StartSeconds = 0.0;
+
+	bool bHasResult = false;
+	bool bResultSuccess = false;
+	FString ResultMessage;
 };
 
 } // namespace MCPWorkbench

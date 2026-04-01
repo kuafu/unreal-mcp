@@ -35,6 +35,32 @@ MCPWorkbench::FRequestLogScope::~FRequestLogScope()
 		JsonObj->TryGetStringField(TEXT("type"), Rec.RequestType);
 		JsonObj->TryGetStringField(TEXT("module"), Rec.Module);
 		JsonObj->TryGetStringField(TEXT("function"), Rec.Function);
+
+		// For "python" type, show a snippet of the code as Function for readability
+		if (Rec.RequestType == TEXT("python") && Rec.Function.IsEmpty())
+		{
+			FString Code;
+			if (JsonObj->TryGetStringField(TEXT("code"), Code))
+			{
+				// First meaningful line (skip imports)
+				Code.TrimStartAndEndInline();
+				if (Code.Len() > 60)
+				{
+					Code = Code.Left(57) + TEXT("...");
+				}
+				Rec.Function = Code;
+			}
+		}
+	}
+
+	// Use execution result if SetResult() was called; otherwise fall back to parse status
+	if (bHasResult)
+	{
+		Rec.bSuccess = bResultSuccess;
+		Rec.Message = ResultMessage;
+	}
+	else if (bParsed)
+	{
 		Rec.bSuccess = true;
 	}
 	else
@@ -235,6 +261,7 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
 
     if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
     {
+        RequestLog.SetResult(false, TEXT("JSON parse error on received data"));
         TSharedPtr<FJsonObject> ErrorResponse = MakeShareable(new FJsonObject);
         ErrorResponse->SetBoolField(TEXT("success"), false);
         ErrorResponse->SetStringField(TEXT("message"), TEXT("Failed: JSON parse error on received data"));
@@ -245,6 +272,7 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
 
     if (!JsonObj->TryGetStringField(TEXT("type"), TypeField))
     {
+        RequestLog.SetResult(false, TEXT("Missing 'type' field"));
         TSharedPtr<FJsonObject> ErrorResponse = MakeShareable(new FJsonObject);
         ErrorResponse->SetBoolField(TEXT("success"), false);
         ErrorResponse->SetStringField(TEXT("message"), TEXT("Failed: Missing 'type' field in JSON request"));
@@ -255,6 +283,7 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
     // --- Native command handlers (e.g. livecoding_compile) ---
     if (FNativeCommandHandler* Handler = NativeHandlers.Find(TypeField))
     {
+        RequestLog.SetResult(true, FString::Printf(TEXT("Native: %s"), *TypeField));
         (*Handler)(JsonObj, ClientSocket);
         return;
     }
@@ -303,6 +332,7 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
     }
     else
     {
+        RequestLog.SetResult(false, FString::Printf(TEXT("Unsupported type: %s"), *TypeField));
         TSharedPtr<FJsonObject> ErrorResponse = MakeShareable(new FJsonObject);
         ErrorResponse->SetBoolField(TEXT("success"), false);
         ErrorResponse->SetStringField(TEXT("message"), FString::Printf(TEXT("Failed: Unsupported type: %s"), *TypeField));
@@ -313,6 +343,7 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
     // --- Execute Python ---
     if (!IPythonScriptPlugin::Get())
     {
+        RequestLog.SetResult(false, TEXT("PythonScriptPlugin not found"));
         TSharedPtr<FJsonObject> ErrorResponse = MakeShareable(new FJsonObject);
         ErrorResponse->SetBoolField(TEXT("success"), false);
         ErrorResponse->SetStringField(TEXT("message"), TEXT("Failed: PythonScriptPlugin not found"));
@@ -349,28 +380,59 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
         CapturedLogs = WrappedJson;
     }
 
-    UE_LOG(LogMCPython, Verbose, TEXT("Python Command Executed. Success: %s. Output Log: %s"),
-        bExecSuccess ? TEXT("True") : TEXT("False"), *CapturedLogs);
+    if (bExecSuccess)
+    {
+        UE_LOG(LogMCPython, Log, TEXT("Python OK (%s)"), *TypeField);
+    }
+    else
+    {
+        UE_LOG(LogMCPython, Warning, TEXT("Python FAILED (%s). Output: %s"), *TypeField, *CapturedLogs);
+    }
 
     TSharedPtr<FJsonObject> ResponseToClient = MakeShareable(new FJsonObject);
     ResponseToClient->SetBoolField(TEXT("success"), bExecSuccess);
 
+    FString ResponseMessage;
     if (!ResultMsg.IsEmpty())
     {
-        ResponseToClient->SetStringField(TEXT("message"), ResultMsg);
+        ResponseMessage = ResultMsg;
     }
     else if (!bExecSuccess)
     {
-        ResponseToClient->SetStringField(TEXT("message"),
-            CapturedLogs.IsEmpty()
-                ? TEXT("Python execution failed with no specific error log.")
-                : TEXT("Python execution failed. See result for details."));
+        // Extract a concise error message from captured logs for the workbench
+        FString ErrorSummary;
+        if (!CapturedLogs.IsEmpty())
+        {
+            // Try to find the last "Error:" line for a concise summary
+            TArray<FString> Lines;
+            CapturedLogs.ParseIntoArrayLines(Lines);
+            for (int32 i = Lines.Num() - 1; i >= 0; --i)
+            {
+                if (Lines[i].Contains(TEXT("Error:")) && !Lines[i].Contains(TEXT("Traceback")))
+                {
+                    ErrorSummary = Lines[i].TrimStartAndEnd();
+                    // Strip "LogPython: Error: " prefix if present
+                    ErrorSummary.ReplaceInline(TEXT("LogPython: Error: "), TEXT(""));
+                    break;
+                }
+            }
+            ResponseMessage = TEXT("Python execution failed. See result for details.");
+        }
+        else
+        {
+            ResponseMessage = TEXT("Python execution failed with no specific error log.");
+        }
+
+        // Record the concise error in the workbench
+        RequestLog.SetResult(false, ErrorSummary.IsEmpty() ? ResponseMessage : ErrorSummary);
     }
     else
     {
-        ResponseToClient->SetStringField(TEXT("message"), TEXT("Python command executed successfully."));
+        ResponseMessage = TEXT("Python command executed successfully.");
+        RequestLog.SetResult(true, TEXT("OK"));
     }
 
+    ResponseToClient->SetStringField(TEXT("message"), ResponseMessage);
     ResponseToClient->SetStringField(TEXT("result"), CapturedLogs);
 
     // Send response and close socket.
