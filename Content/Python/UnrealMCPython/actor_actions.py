@@ -4,8 +4,6 @@ import unreal
 import json
 import traceback
 
-ACTOR_ACTIONS_MODULE = "actor_actions"
-
 # Helper function (consider if it should be private or utility)
 def _get_actor_by_label(actor_label: str):
     """

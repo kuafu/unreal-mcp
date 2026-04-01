@@ -2,12 +2,14 @@
 
 # MCP Router for Utility Tools
 
-from fastmcp import FastMCP
-from pydantic import BaseModel, Field
 from typing import Annotated, Optional
+
+from fastmcp import FastMCP
+from pydantic import Field
+
 from unreal_mcp.core import send_unreal_action, send_livecoding_compile, send_python_exec, ToolInputError
 
-util_mcp = FastMCP(name="UtilityMCP", description="Utility tools for Unreal Engine logging and diagnostics.")
+util_mcp = FastMCP(name="UtilityMCP", instructions="Utility tools for Unreal Engine logging and diagnostics.")
 
 UTIL_ACTIONS_MODULE = "UnrealMCPython.util_actions"
 

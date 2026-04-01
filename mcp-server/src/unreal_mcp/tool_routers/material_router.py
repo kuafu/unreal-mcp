@@ -3,15 +3,16 @@
 """
 FastMCP sub-server for Material related tools.
 """
-from fastmcp import FastMCP
-from pydantic import BaseModel, Field
-from typing import List, Optional, Union, Dict, Any, Annotated
+from typing import Annotated, List, Optional
 
-from unreal_mcp.core import send_unreal_action, ToolInputError
+from fastmcp import FastMCP
+from pydantic import Field
+
+from unreal_mcp.core import send_unreal_action
 
 MATERIAL_ACTIONS_MODULE = "UnrealMCPython.material_actions"
 
-material_mcp = FastMCP(name="MaterialMCP", description="Tools for managing and editing Unreal Engine materials and material instances.")
+material_mcp = FastMCP(name="MaterialMCP", instructions="Tools for managing and editing Unreal Engine materials and material instances.")
 
 # --- Tool Endpoints for Materials (Refactored for FastMCP) ---
 

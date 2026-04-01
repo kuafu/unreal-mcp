@@ -2,15 +2,16 @@
 
 # MCP Router for Actor Tools
 
-from typing import Annotated, Optional, List
-from pydantic import Field
+from typing import Annotated, List, Optional
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from unreal_mcp.core import send_unreal_action, ToolInputError
 
 ACTOR_ACTIONS_MODULE = "UnrealMCPython.actor_actions"
 
-actor_mcp = FastMCP(name="ActorMCP", description="Tools for manipulating and querying actors in the Unreal Engine scene.")
+actor_mcp = FastMCP(name="ActorMCP", instructions="Tools for manipulating and querying actors in the Unreal Engine scene.")
 
 @actor_mcp.tool(
     name="spawn_from_object",

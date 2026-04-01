@@ -128,5 +128,5 @@ cd mcp-server && pytest
 - Unreal Engine 5.6+ (plugin descriptor targets 5.7.0)
 - Win64 only for the C++ plugin module
 - Python 3.11+ for the MCP server
-- Primary dependency: `fastmcp`
+- Primary dependency: `fastmcp` (v3+; uses `instructions=` not `description=` in `FastMCP()`)
 - License: Apache-2.0

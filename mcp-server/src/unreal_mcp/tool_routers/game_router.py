@@ -3,8 +3,9 @@
 # MCP Router for Game Settings Tools
 
 from typing import Annotated, Optional
-from pydantic import Field
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from unreal_mcp.core import send_unreal_action, ToolInputError
 
@@ -12,7 +13,7 @@ GAME_ACTIONS_MODULE = "UnrealMCPython.game_actions"
 
 game_mcp = FastMCP(
     name="GameMCP",
-    description="Tools for configuring game settings such as GameMode, input actions, and input mappings."
+    instructions="Tools for configuring game settings such as GameMode, input actions, and input mappings.",
 )
 
 @game_mcp.tool(

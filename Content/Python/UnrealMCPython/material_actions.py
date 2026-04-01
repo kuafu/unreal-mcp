@@ -364,17 +364,6 @@ def ue_get_mi_texture_param(instance_path: str = None, parameter_name: str = Non
     except Exception as e:
         return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
 
-def _get_mi_texture_param_names(instance_path):
-    """
-    Gets all texture parameter names for a given material instance
-    """
-    try:
-        instance = unreal.load_asset(instance_path)
-        texture_param_names = unreal.MaterialEditingLibrary.get_texture_parameter_names(instance)
-        return list(texture_param_names)
-    except Exception as e:
-        return []
-    
 def ue_set_mi_texture_param(instance_path: str = None, parameter_name: str = None, texture_path: Optional[str] = None) -> str:
     """Sets a texture parameter on a Material Instance. Provide texture asset path. Returns JSON string."""
     if instance_path is None:

@@ -1,45 +1,33 @@
 # Copyright (c) 2025 GenOrca. All Rights Reserved.
 
 import warnings
+
 import unreal
 import json
 import traceback
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 
 # Suppress DeprecationWarning for EditorLevelLibrary functions that have no
 # subsystem equivalent yet (replace_mesh_*, replace_selected_actors, refresh_all_level_editors).
 warnings.filterwarnings("ignore", message=".*EditorLevelLibrary.*deprecated.*", category=DeprecationWarning)
 
-def ue_get_selected_assets() -> str:
-    """Gets the set of currently selected assets."""
-    try:
-        selected_assets = unreal.EditorUtilityLibrary.get_selected_assets()
-        
-        serialized_assets = []
-        for asset in selected_assets:
-            serialized_assets.append({
-                "asset_name": asset.get_name(),
-                "asset_path": asset.get_path_name(),
-                "asset_class": asset.get_class().get_name(),
-            })
-        
-        return json.dumps({"success": True, "selected_assets": serialized_assets})
-    except Exception as e:
-        return json.dumps({"success": False, "message": str(e)})
 
-# Helper function to load MaterialInterface assets (can be Material or MaterialInstance)
+# ---------------------------------------------------------------------------
+# Helpers — asset loading
+# ---------------------------------------------------------------------------
+
 def _load_material_interface(material_path: str):
-    # Helper implementation (ensure this is robust or use existing if available)
+    """Load and validate a MaterialInterface (Material or MaterialInstance)."""
     material = unreal.EditorAssetLibrary.load_asset(material_path)
     if not material:
         raise FileNotFoundError(f"Material asset not found at path: {material_path}")
-    if not isinstance(material, unreal.MaterialInterface): # Allows Material or MaterialInstance
+    if not isinstance(material, unreal.MaterialInterface):
         raise TypeError(f"Asset at {material_path} is not a MaterialInterface, but {type(material).__name__}")
     return material
 
-# Helper function to load StaticMesh assets
+
 def _load_static_mesh(mesh_path: str):
-    # Helper implementation (ensure this is robust or use existing if available)
+    """Load and validate a StaticMesh asset."""
     mesh = unreal.EditorAssetLibrary.load_asset(mesh_path)
     if not mesh:
         raise FileNotFoundError(f"StaticMesh asset not found at path: {mesh_path}")
@@ -47,22 +35,15 @@ def _load_static_mesh(mesh_path: str):
         raise TypeError(f"Asset at {mesh_path} is not a StaticMesh, but {type(mesh).__name__}")
     return mesh
 
-# Helper function to get material paths from a mesh component
-def _get_component_material_paths(component: unreal.MeshComponent) -> List[str]:
-    material_paths = []
-    if component:
-        for i in range(component.get_num_materials()):
-            material = component.get_material(i)
-            if material:
-                material_paths.append(material.get_path_name())
-            else:
-                material_paths.append("") # Represent empty slot
-    return material_paths
 
-# Helper function to get actors by their paths
+# ---------------------------------------------------------------------------
+# Helpers — actor / component introspection
+# ---------------------------------------------------------------------------
+
 def _get_actors_by_paths(actor_paths: List[str]) -> List[unreal.Actor]:
-    actors = []
+    """Resolve a list of actor path strings to actor objects."""
     all_level_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors()
+    actors = []
     for path in actor_paths:
         actor = next((a for a in all_level_actors if a.get_path_name() == path), None)
         if actor:
@@ -71,511 +52,385 @@ def _get_actors_by_paths(actor_paths: List[str]) -> List[unreal.Actor]:
             unreal.log_warning(f"MCP: Actor not found at path: {path}")
     return actors
 
-# Helper to create a map of actor paths to their unique material asset paths
-def _get_materials_map_for_actors(actors_list: List[unreal.Actor]) -> Dict[str, List[str]]:
-    materials_map = {}
-    if not actors_list:
-        return materials_map
-    for actor in actors_list:
-        if not actor: continue
-        actor_path_name = actor.get_path_name()
-        actor_material_paths = set()
-        mesh_components = actor.get_components_by_class(unreal.MeshComponent.static_class())
-        for comp in mesh_components:
-            if comp:
-                for i in range(comp.get_num_materials()):
-                    material = comp.get_material(i)
-                    if material:
-                        actor_material_paths.add(material.get_path_name())
-        materials_map[actor_path_name] = sorted(list(actor_material_paths))
-    return materials_map
 
-# Helper to get static mesh path from a static mesh component
-def _get_component_mesh_path(component: unreal.StaticMeshComponent) -> str:
-    if component and hasattr(component, 'static_mesh') and component.static_mesh:
-        return component.static_mesh.get_path_name()
-    return ""
+def _get_component_material_paths(component: unreal.MeshComponent) -> List[str]:
+    """Return ordered list of material paths for every slot on a mesh component."""
+    if not component:
+        return []
+    return [
+        material.get_path_name() if material else ""
+        for i in range(component.get_num_materials())
+        for material in [component.get_material(i)]
+    ]
 
-# Helper to create a map of actor paths to their unique static mesh asset paths
-def _get_meshes_map_for_actors(actors_list: List[unreal.Actor]) -> Dict[str, List[str]]:
-    meshes_map = {}
-    if not actors_list:
-        return meshes_map
-    for actor in actors_list:
-        if not actor: continue
-        actor_path_name = actor.get_path_name()
-        actor_mesh_paths = set()
-        sm_components = actor.get_components_by_class(unreal.StaticMeshComponent.static_class())
-        for comp in sm_components:
-            mesh_path = _get_component_mesh_path(comp)
-            if mesh_path:
-                actor_mesh_paths.add(mesh_path)
-        meshes_map[actor_path_name] = sorted(list(actor_mesh_paths))
-    return meshes_map
 
-# Helper to create a map of actor paths to their unique skeletal mesh asset paths
-def _get_skeletal_meshes_map_for_actors(actors_list: List[unreal.Actor]) -> Dict[str, List[str]]:
-    skeletal_meshes_map = {}
-    if not actors_list:
-        return skeletal_meshes_map
-    for actor in actors_list:
+def _get_asset_map_for_actors(actors: List[unreal.Actor], component_class, asset_getter) -> Dict[str, List[str]]:
+    """
+    Build a map of {actor_path: [asset_paths]} for a given component class.
+    ``asset_getter(component) -> str|None`` extracts the asset path from a component.
+    """
+    result = {}
+    for actor in actors:
         if not actor:
             continue
-        actor_path_name = actor.get_path_name()
-        actor_skel_mesh_paths = set()
-        skel_components = actor.get_components_by_class(unreal.SkeletalMeshComponent.static_class())
-        for comp in skel_components:
-            if hasattr(comp, 'skeletal_mesh') and comp.skeletal_mesh:
-                actor_skel_mesh_paths.add(comp.skeletal_mesh.get_path_name())
-        skeletal_meshes_map[actor_path_name] = sorted(list(actor_skel_mesh_paths))
-    return skeletal_meshes_map
+        paths = set()
+        for comp in actor.get_components_by_class(component_class):
+            path = asset_getter(comp)
+            if path:
+                paths.add(path)
+        result[actor.get_path_name()] = sorted(paths)
+    return result
 
 
-# Base helper for replacing meshes
-def _replace_meshes_on_actors_components_base(
-    actors: List[unreal.Actor],
-    mesh_to_be_replaced_path: str, # Can be empty/None to replace any mesh
-    new_mesh_path: str
-) -> Dict[str, Any]:
-    """Base logic for replacing static meshes on components of given actors."""
-    mesh_to_replace = None
-    # Only load if a specific mesh is targeted for replacement
-    if mesh_to_be_replaced_path and mesh_to_be_replaced_path.lower() not in ["", "none", "any"]:
-        mesh_to_replace = _load_static_mesh(mesh_to_be_replaced_path) # Uses existing helper
-        # If _load_static_mesh raises, it will be caught by the calling ue_ function's try-except
-
-    new_mesh = _load_static_mesh(new_mesh_path) # Uses existing helper
-    # If _load_static_mesh raises, it will be caught by the calling ue_ function's try-except
-
-    if mesh_to_replace and new_mesh and mesh_to_replace.get_path_name() == new_mesh.get_path_name():
-        return {"success": True, "message": "Mesh to be replaced is the same as the new mesh. No changes made.", "changed_actors_count": 0, "changed_components_count": 0}
-
-
-    changed_actors_count = 0
-    changed_components_count = 0
-    details = {"actors_affected": []}
-
-    with unreal.ScopedEditorTransaction("Replace Static Meshes on Components") as trans:
-        for actor in actors:
-            if not actor: continue
-            actor_path = actor.get_path_name()
-            actor_changed_this_iteration = False
-            actor_details = {"actor_path": actor_path, "components_changed": []}
-            
-            static_mesh_components = actor.get_components_by_class(unreal.StaticMeshComponent.static_class())
-            for component in static_mesh_components:
-                if not component or component.get_owner() != actor:
-                    continue
-                
-                component_path = component.get_path_name()
-                current_mesh = component.static_mesh
-                
-                should_replace = False
-                # Case 1: Replace any mesh (mesh_to_be_replaced_path is empty/None/Any)
-                if not mesh_to_be_replaced_path or mesh_to_be_replaced_path.lower() in ["", "none", "any"]:
-                    if current_mesh != new_mesh : # Avoid replacing with itself if no specific mesh to replace
-                        should_replace = True
-                # Case 2: Replace a specific mesh
-                elif mesh_to_replace and current_mesh and current_mesh.get_path_name() == mesh_to_replace.get_path_name():
-                     if current_mesh.get_path_name() != new_mesh.get_path_name(): # Don't replace if it's already the new mesh
-                        should_replace = True
-                # Case 3: Component has no mesh, and we want to set one (mesh_to_be_replaced_path is empty/None/Any)
-                elif (not mesh_to_be_replaced_path or mesh_to_be_replaced_path.lower() in ["", "none", "any"]) and not current_mesh:
-                    should_replace = True
+def _get_materials_map_for_actors(actors: List[unreal.Actor]) -> Dict[str, List[str]]:
+    def _getter(comp):
+        paths = set()
+        for i in range(comp.get_num_materials()):
+            mat = comp.get_material(i)
+            if mat:
+                paths.add(mat.get_path_name())
+        return paths
+    result = {}
+    for actor in actors:
+        if not actor:
+            continue
+        actor_paths = set()
+        for comp in actor.get_components_by_class(unreal.MeshComponent.static_class()):
+            if comp:
+                actor_paths.update(_getter(comp))
+        result[actor.get_path_name()] = sorted(actor_paths)
+    return result
 
 
-                if should_replace:
-                    if component.set_static_mesh(new_mesh):
-                        changed_components_count += 1
-                        actor_changed_this_iteration = True
-                        actor_details["components_changed"].append({"component_path": component_path, "previous_mesh": current_mesh.get_path_name() if current_mesh else None})
-                    else:
-                        unreal.log_warning(f"MCP: Failed to set static mesh on component {component_path} for actor {actor_path}")
-            
-            if actor_changed_this_iteration:
-                changed_actors_count += 1
-                details["actors_affected"].append(actor_details)
-            
-    if changed_actors_count > 0:
-        unreal.EditorLevelLibrary.refresh_all_level_editors()
+def _get_meshes_map_for_actors(actors: List[unreal.Actor]) -> Dict[str, List[str]]:
+    return _get_asset_map_for_actors(
+        actors,
+        unreal.StaticMeshComponent.static_class(),
+        lambda comp: comp.static_mesh.get_path_name() if comp and hasattr(comp, 'static_mesh') and comp.static_mesh else None,
+    )
 
-    return {
-        "success": True,
-        "message": f"Mesh replacement processed. Actors processed: {len(actors)}.",
-        "changed_actors_count": changed_actors_count,
-        "changed_components_count": changed_components_count,
-        "details": details
-    }
+
+def _get_skeletal_meshes_map_for_actors(actors: List[unreal.Actor]) -> Dict[str, List[str]]:
+    return _get_asset_map_for_actors(
+        actors,
+        unreal.SkeletalMeshComponent.static_class(),
+        lambda comp: comp.skeletal_mesh.get_path_name() if comp and hasattr(comp, 'skeletal_mesh') and comp.skeletal_mesh else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers — material replacement change detection
+# ---------------------------------------------------------------------------
+
+def _detect_material_changes(
+    mesh_components: list,
+    initial_materials_map: Dict[str, List[str]],
+    old_material_path: str,
+    new_material_path: str,
+) -> tuple:
+    """
+    Compare before/after material slots and return (count, affected_paths).
+    """
+    count = 0
+    affected = []
+    for comp in mesh_components:
+        current = _get_component_material_paths(comp)
+        original = initial_materials_map.get(comp.get_path_name(), [])
+        for idx, orig_path in enumerate(original):
+            if orig_path == old_material_path:
+                if idx < len(current) and current[idx] == new_material_path:
+                    count += 1
+                    affected.append(comp.get_path_name())
+                    break
+    return count, affected
+
+
+# ---------------------------------------------------------------------------
+# Helpers — mesh replacement
+# ---------------------------------------------------------------------------
+
+def _collect_mesh_components(actors: list) -> list:
+    """Gather all StaticMeshComponent instances from a list of actors."""
+    components = []
+    for actor in actors:
+        comps = actor.get_components_by_class(unreal.StaticMeshComponent.static_class())
+        components.extend(c for c in comps if c)
+    return components
+
+
+def _is_empty_mesh_path(path: str) -> bool:
+    return not path or path.lower() in ("", "none", "any")
+
+
+def _replace_meshes_on_components(actors, mesh_to_replace, new_mesh, all_mesh_components):
+    """
+    Try the batch API first, fall back to manual per-component replacement.
+    """
+    if hasattr(unreal.EditorLevelLibrary, "replace_mesh_components_meshes_on_actors"):
+        unreal.EditorLevelLibrary.replace_mesh_components_meshes_on_actors(actors, mesh_to_replace, new_mesh)
+    else:
+        for comp in all_mesh_components:
+            current = comp.static_mesh
+            should_replace = False
+            if not mesh_to_replace:
+                should_replace = current != new_mesh
+            elif current and current.get_path_name() == mesh_to_replace.get_path_name():
+                should_replace = current.get_path_name() != new_mesh.get_path_name()
+            elif not current and not mesh_to_replace:
+                should_replace = True
+            if should_replace:
+                comp.set_static_mesh(new_mesh)
+
+
+def _detect_mesh_changes(all_mesh_components, initial_meshes_map, mesh_to_replace, new_mesh):
+    """
+    Compare before/after meshes and return (count, affected_paths, unchanged_info).
+    """
+    changed_count = 0
+    affected_paths = []
+    unchanged_info = []
+    new_mesh_path = new_mesh.get_path_name()
+    replace_path = mesh_to_replace.get_path_name() if mesh_to_replace else None
+
+    for comp in all_mesh_components:
+        before = initial_meshes_map.get(comp.get_path_name(), "")
+        after = comp.static_mesh.get_path_name() if comp.static_mesh else ""
+        owner = comp.get_owner()
+        owner_name = owner.get_name() if owner else "Unknown"
+
+        if replace_path:
+            if before == replace_path and after == new_mesh_path:
+                changed_count += 1
+                affected_paths.append(comp.get_path_name())
+            else:
+                is_candidate = before == replace_path
+                unchanged_info.append({
+                    "component_path": comp.get_path_name(),
+                    "component_name": comp.get_name(),
+                    "actor_name": owner_name,
+                    "current_mesh": before,
+                    "is_candidate": is_candidate,
+                    "reason": (
+                        "Component is a candidate but was not changed" if is_candidate
+                        else "Current mesh doesn't match the mesh to be replaced"
+                    ),
+                })
+        else:
+            if before != after and after == new_mesh_path:
+                changed_count += 1
+                affected_paths.append(comp.get_path_name())
+            else:
+                unchanged_info.append({
+                    "component_path": comp.get_path_name(),
+                    "component_name": comp.get_name(),
+                    "actor_name": owner_name,
+                    "current_mesh": before,
+                    "is_candidate": False,
+                    "reason": (
+                        "Component already has the target mesh" if before == new_mesh_path
+                        else "Failed to set new mesh"
+                    ),
+                })
+
+    return changed_count, affected_paths, unchanged_info
+
+
+# ---------------------------------------------------------------------------
+# Public actions — asset selection
+# ---------------------------------------------------------------------------
+
+def ue_get_selected_assets() -> str:
+    """Gets the set of currently selected assets."""
+    try:
+        selected = unreal.EditorUtilityLibrary.get_selected_assets()
+        assets = [
+            {
+                "asset_name": a.get_name(),
+                "asset_path": a.get_path_name(),
+                "asset_class": a.get_class().get_name(),
+            }
+            for a in selected
+        ]
+        return json.dumps({"success": True, "selected_assets": assets})
+    except Exception as e:
+        return json.dumps({"success": False, "message": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Public actions — material replacement
+# ---------------------------------------------------------------------------
+
+def _replace_materials_on_actors(actors, material_to_be_replaced_path, new_material_path, use_batch_api):
+    """
+    Shared logic for material replacement on a list of actors.
+    ``use_batch_api`` selects between the selected-actors and specified-actors UE APIs.
+    """
+    material_to_replace = _load_material_interface(material_to_be_replaced_path)
+    new_material = _load_material_interface(new_material_path)
+
+    mesh_components = []
+    for actor in actors:
+        comps = actor.get_components_by_class(unreal.MeshComponent.static_class())
+        mesh_components.extend(c for c in comps if c)
+
+    if not mesh_components:
+        return json.dumps({"success": False, "message": "No mesh components found on the target actors."})
+
+    initial_map = {comp.get_path_name(): _get_component_material_paths(comp) for comp in mesh_components}
+
+    if use_batch_api:
+        unreal.EditorLevelLibrary.replace_mesh_components_materials_on_actors(actors, material_to_replace, new_material)
+    else:
+        unreal.EditorLevelLibrary.replace_mesh_components_materials(mesh_components, material_to_replace, new_material)
+
+    count, affected = _detect_material_changes(mesh_components, initial_map, material_to_replace.get_path_name(), new_material.get_path_name())
+
+    if count > 0:
+        return json.dumps({
+            "success": True,
+            "message": f"Replaced material '{material_to_be_replaced_path}' with '{new_material_path}' on {count} component(s) across {len(actors)} actor(s).",
+            "affected_actors_count": len(actors),
+            "affected_components_count": count,
+            "affected_component_paths": affected,
+        })
+    return json.dumps({
+        "success": False,
+        "message": f"Target material '{material_to_be_replaced_path}' not found or not replaced on any mesh components.",
+    })
+
 
 def ue_replace_mtl_on_selected(material_to_be_replaced_path: str, new_material_path: str) -> str:
     try:
-        material_to_replace = _load_material_interface(material_to_be_replaced_path)
-        new_material = _load_material_interface(new_material_path)
-        
-        selected_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
-        if not selected_actors:
+        actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
+        if not actors:
             return json.dumps({"success": False, "message": "No actors selected."})
-
-        mesh_components = []
-        for actor in selected_actors:
-            components = actor.get_components_by_class(unreal.MeshComponent.static_class())
-            mesh_components.extend(c for c in components if c)
-        
-        if not mesh_components:
-            return json.dumps({"success": False, "message": "No mesh components found on selected actors."})
-
-        initial_materials_map = {}
-        for comp in mesh_components:
-            initial_materials_map[comp.get_path_name()] = _get_component_material_paths(comp)
-
-        unreal.EditorLevelLibrary.replace_mesh_components_materials(
-            mesh_components, 
-            material_to_replace, 
-            new_material
-        )
-
-        num_components_affected = 0
-        affected_component_paths = []
-        for comp in mesh_components:
-            current_materials = _get_component_material_paths(comp)
-            original_materials = initial_materials_map.get(comp.get_path_name(), [])
-            
-            component_changed_here = False
-            for slot_idx, original_mat_path in enumerate(original_materials):
-                if original_mat_path == material_to_replace.get_path_name():
-                    if slot_idx < len(current_materials) and current_materials[slot_idx] == new_material.get_path_name():
-                        component_changed_here = True
-                        break 
-            if component_changed_here:
-                num_components_affected += 1
-                affected_component_paths.append(comp.get_path_name())
-        
-        if num_components_affected > 0:
-            return json.dumps({
-                "success": True, 
-                "message": f"Successfully replaced material '{material_to_be_replaced_path}' with '{new_material_path}' on {num_components_affected} mesh component(s) across {len(selected_actors)} selected actor(s).",
-                "affected_actors_count": len(selected_actors),
-                "affected_components_count": num_components_affected,
-                "affected_component_paths": affected_component_paths
-            })
-        else:
-            return json.dumps({
-                "success": False, 
-                "message": f"Failed to replace material. Target material '{material_to_be_replaced_path}' not found or not replaced on any mesh components of selected actors."
-            })
+        return _replace_materials_on_actors(actors, material_to_be_replaced_path, new_material_path, use_batch_api=False)
     except Exception as e:
         return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
+
 
 def ue_replace_mtl_on_specified(actor_paths: List[str], material_to_be_replaced_path: str, new_material_path: str) -> str:
     try:
-        material_to_replace = _load_material_interface(material_to_be_replaced_path)
-        new_material = _load_material_interface(new_material_path)
-        
-        actors_to_process = _get_actors_by_paths(actor_paths)
-        if not actors_to_process:
+        actors = _get_actors_by_paths(actor_paths)
+        if not actors:
             return json.dumps({"success": False, "message": "No valid actors found from the provided paths."})
-
-        all_mesh_components_in_actors = []
-        for actor in actors_to_process:
-            components = actor.get_components_by_class(unreal.MeshComponent.static_class())
-            all_mesh_components_in_actors.extend(c for c in components if c)
-
-        if not all_mesh_components_in_actors:
-            return json.dumps({"success": False, "message": "No mesh components found on the specified actors."})
-
-        initial_materials_map = {}
-        for comp in all_mesh_components_in_actors:
-            initial_materials_map[comp.get_path_name()] = _get_component_material_paths(comp)
-        
-        unreal.EditorLevelLibrary.replace_mesh_components_materials_on_actors(
-            actors_to_process, 
-            material_to_replace, 
-            new_material
-        )
-        
-        num_components_affected = 0
-        affected_component_paths = []
-        for comp in all_mesh_components_in_actors:
-            current_materials = _get_component_material_paths(comp)
-            original_materials = initial_materials_map.get(comp.get_path_name(), [])
-            
-            component_changed_here = False
-            for slot_idx, original_mat_path in enumerate(original_materials):
-                if original_mat_path == material_to_replace.get_path_name():
-                    if slot_idx < len(current_materials) and current_materials[slot_idx] == new_material.get_path_name():
-                        component_changed_here = True
-                        break
-            if component_changed_here:
-                num_components_affected += 1
-                affected_component_paths.append(comp.get_path_name())
-        
-        if num_components_affected > 0:
-            return json.dumps({
-                "success": True, 
-                "message": f"Successfully replaced material '{material_to_be_replaced_path}' with '{new_material_path}' on {num_components_affected} mesh component(s) across {len(actors_to_process)} specified actor(s).",
-                "affected_actors_count": len(actors_to_process),
-                "affected_components_count": num_components_affected,
-                "affected_component_paths": affected_component_paths
-            })
-        else:
-            return json.dumps({
-                "success": False, 
-                "message": f"Failed to replace material. Target material '{material_to_be_replaced_path}' not found or not replaced on any mesh components of specified actors."
-            })
+        return _replace_materials_on_actors(actors, material_to_be_replaced_path, new_material_path, use_batch_api=True)
     except Exception as e:
         return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
 
-def ue_replace_mesh_on_selected(mesh_to_be_replaced_path: str, new_mesh_path: str) -> str:
-    """Replaces static meshes on components of selected actors using Unreal's batch API if available."""
-    try:
-        # Check if mesh_to_be_replaced_path exists (if specified)
-        if mesh_to_be_replaced_path and mesh_to_be_replaced_path.lower() not in ["", "none", "any"]:
-            try:
-                _ = _load_static_mesh(mesh_to_be_replaced_path)
-            except FileNotFoundError:
-                return json.dumps({
-                    "success": False,
-                    "message": f"The mesh_to_be_replaced_path '{mesh_to_be_replaced_path}' does not exist as a StaticMesh asset.",
-                    "error_type": "MeshToReplaceNotFound"
-                })
-        
-        selected_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
-        if not selected_actors:
-            return json.dumps({"success": True, "message": "No actors selected.", "changed_actors_count": 0, "changed_components_count": 0})
 
-        mesh_to_replace = None
-        if mesh_to_be_replaced_path and mesh_to_be_replaced_path.lower() not in ["", "none", "any"]:
-            mesh_to_replace = _load_static_mesh(mesh_to_be_replaced_path)
-        new_mesh = _load_static_mesh(new_mesh_path)
+# ---------------------------------------------------------------------------
+# Public actions — mesh replacement
+# ---------------------------------------------------------------------------
 
-        # Gather all static mesh components from selected actors
-        all_mesh_components = []
-        for actor in selected_actors:
-            comps = actor.get_components_by_class(unreal.StaticMeshComponent.static_class())
-            all_mesh_components.extend(c for c in comps if c)
-
-        if not all_mesh_components:
-            return json.dumps({"success": False, "message": "No static mesh components found on selected actors."})
-
-        # Save initial mesh paths for change detection
-        initial_meshes_map = {comp.get_path_name(): comp.static_mesh.get_path_name() if comp.static_mesh else "" for comp in all_mesh_components}
-
-        # Use Unreal's batch API if available
-        if hasattr(unreal.EditorLevelLibrary, "replace_mesh_components_meshes_on_actors"):
-            unreal.EditorLevelLibrary.replace_mesh_components_meshes_on_actors(
-                selected_actors,
-                mesh_to_replace,
-                new_mesh
-            )
-        else:
-            # Fallback to manual replacement if batch API is not available
-            for comp in all_mesh_components:
-                current_mesh = comp.static_mesh
-                should_replace = False
-                if not mesh_to_replace:
-                    if current_mesh != new_mesh:
-                        should_replace = True
-                elif current_mesh and current_mesh.get_path_name() == mesh_to_replace.get_path_name():
-                    if current_mesh.get_path_name() != new_mesh.get_path_name():
-                        should_replace = True
-                elif not current_mesh and not mesh_to_replace:
-                    should_replace = True
-                if should_replace:
-                    comp.set_static_mesh(new_mesh)
-
-        # Detect changes
-        changed_components_count = 0
-        affected_component_paths = []
-        for comp in all_mesh_components:
-            before = initial_meshes_map.get(comp.get_path_name(), "")
-            after = comp.static_mesh.get_path_name() if comp.static_mesh else ""
-            if mesh_to_replace:
-                if before == mesh_to_replace.get_path_name() and after == new_mesh.get_path_name():
-                    changed_components_count += 1
-                    affected_component_paths.append(comp.get_path_name())
-            else:
-                if before != after and after == new_mesh.get_path_name():
-                    changed_components_count += 1
-                    affected_component_paths.append(comp.get_path_name())
-
-        if changed_components_count > 0:
-            return json.dumps({
-                "success": True,
-                "message": f"Successfully replaced mesh on {changed_components_count} static mesh component(s) across {len(selected_actors)} selected actor(s).",
-                "affected_actors_count": len(selected_actors),
-                "affected_components_count": changed_components_count,
-                "affected_component_paths": affected_component_paths
-            })
-        else:
+def _replace_meshes_on_actors(actors, mesh_to_be_replaced_path: str, new_mesh_path: str, include_diagnostics: bool = False) -> str:
+    """
+    Shared logic for static mesh replacement on a list of actors.
+    When ``include_diagnostics`` is True, failure responses include extra asset maps.
+    """
+    # Validate replacement mesh exists
+    if not _is_empty_mesh_path(mesh_to_be_replaced_path):
+        try:
+            _load_static_mesh(mesh_to_be_replaced_path)
+        except FileNotFoundError:
             return json.dumps({
                 "success": False,
-                "message": f"Failed to replace mesh. Target mesh '{mesh_to_be_replaced_path}' not found or not replaced on any static mesh components of selected actors."
+                "message": f"The mesh_to_be_replaced_path '{mesh_to_be_replaced_path}' does not exist as a StaticMesh asset.",
+                "error_type": "MeshToReplaceNotFound",
             })
-    except FileNotFoundError as e:
-        unreal.log_error(f"MCP: Asset loading error in ue_replace_mesh_on_selected: {e}")
-        return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
-    except TypeError as e:
-        unreal.log_error(f"MCP: Asset type error in ue_replace_mesh_on_selected: {e}")
-        return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
+
+    mesh_to_replace = None
+    if not _is_empty_mesh_path(mesh_to_be_replaced_path):
+        mesh_to_replace = _load_static_mesh(mesh_to_be_replaced_path)
+    new_mesh = _load_static_mesh(new_mesh_path)
+
+    all_components = _collect_mesh_components(actors)
+    if not all_components:
+        result = {"success": False, "message": "No static mesh components found on target actors."}
+        if include_diagnostics:
+            result["specified_actors_info"] = [{"name": a.get_name(), "class": a.get_class().get_name()} for a in actors]
+            result["current_materials"] = _get_materials_map_for_actors(actors)
+            result["current_meshes"] = _get_meshes_map_for_actors(actors)
+            result["current_skeletal_meshes"] = _get_skeletal_meshes_map_for_actors(actors)
+        return json.dumps(result)
+
+    initial_map = {
+        comp.get_path_name(): comp.static_mesh.get_path_name() if comp.static_mesh else ""
+        for comp in all_components
+    }
+
+    _replace_meshes_on_components(actors, mesh_to_replace, new_mesh, all_components)
+
+    changed_count, affected_paths, unchanged_info = _detect_mesh_changes(all_components, initial_map, mesh_to_replace, new_mesh)
+
+    if changed_count > 0:
+        result = {
+            "success": True,
+            "message": f"Replaced mesh on {changed_count} component(s) across {len(actors)} actor(s).",
+            "affected_actors_count": len(actors),
+            "affected_components_count": changed_count,
+            "affected_component_paths": affected_paths,
+        }
+        if include_diagnostics and unchanged_info:
+            result["unchanged_components"] = unchanged_info
+        return json.dumps(result)
+
+    result = {
+        "success": False,
+        "message": f"Target mesh '{mesh_to_be_replaced_path}' not found or not replaced on any static mesh components.",
+    }
+    if include_diagnostics:
+        result["current_materials"] = _get_materials_map_for_actors(actors)
+        result["current_meshes"] = _get_meshes_map_for_actors(actors)
+        result["current_skeletal_meshes"] = _get_skeletal_meshes_map_for_actors(actors)
+        result["unchanged_components"] = unchanged_info
+    return json.dumps(result)
+
+
+def ue_replace_mesh_on_selected(mesh_to_be_replaced_path: str, new_mesh_path: str) -> str:
+    """Replaces static meshes on components of selected actors."""
+    try:
+        actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
+        if not actors:
+            return json.dumps({"success": True, "message": "No actors selected.", "changed_actors_count": 0, "changed_components_count": 0})
+        return _replace_meshes_on_actors(actors, mesh_to_be_replaced_path, new_mesh_path)
     except Exception as e:
         unreal.log_error(f"MCP: Error in ue_replace_mesh_on_selected: {e}\n{traceback.format_exc()}")
         return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
 
+
 def ue_replace_mesh_on_specified(actor_paths: List[str], mesh_to_be_replaced_path: str, new_mesh_path: str) -> str:
-    """Replaces static meshes on components of specified actors using Unreal's batch API if available."""
+    """Replaces static meshes on components of specified actors."""
     try:
-        # Check if mesh_to_be_replaced_path exists (if specified)
-        if mesh_to_be_replaced_path and mesh_to_be_replaced_path.lower() not in ["", "none", "any"]:
-            try:
-                _ = _load_static_mesh(mesh_to_be_replaced_path)
-            except FileNotFoundError:
-                return json.dumps({
-                    "success": False,
-                    "message": f"The mesh_to_be_replaced_path '{mesh_to_be_replaced_path}' does not exist as a StaticMesh asset.",
-                    "error_type": "MeshToReplaceNotFound"
-                })
-        actors_to_process = _get_actors_by_paths(actor_paths)
-        if not actors_to_process:
+        actors = _get_actors_by_paths(actor_paths)
+        if not actors:
             return json.dumps({"success": False, "message": "No valid actors found from the provided paths."})
-        mesh_to_replace = None
-        if mesh_to_be_replaced_path and mesh_to_be_replaced_path.lower() not in ["", "none", "any"]:
-            mesh_to_replace = _load_static_mesh(mesh_to_be_replaced_path)
-        new_mesh = _load_static_mesh(new_mesh_path)
-        # Gather all static mesh components from specified actors
-        all_mesh_components = []
-        for actor in actors_to_process:
-            comps = actor.get_components_by_class(unreal.StaticMeshComponent.static_class())
-            all_mesh_components.extend(c for c in comps if c)
-        if not all_mesh_components:
-            # Get the actual actor types and names for better diagnosis
-            actor_info = [{"name": actor.get_name(), "class": actor.get_class().get_name()} for actor in actors_to_process]
-            actors_materials_info = _get_materials_map_for_actors(actors_to_process)
-            actors_meshes_info = _get_meshes_map_for_actors(actors_to_process)
-            actors_skel_meshes_info = _get_skeletal_meshes_map_for_actors(actors_to_process)
-            return json.dumps({
-                "success": False,
-                "message": "No static mesh components found on specified actors.",
-                "specified_actors_info": actor_info,
-                "current_materials": actors_materials_info,
-                "current_meshes": actors_meshes_info,
-                "current_skeletal_meshes": actors_skel_meshes_info
-            })
-        # Save initial mesh paths for change detection
-        initial_meshes_map = {comp.get_path_name(): comp.static_mesh.get_path_name() if comp.static_mesh else "" for comp in all_mesh_components}
-        # Use Unreal's batch API if available
-        if hasattr(unreal.EditorLevelLibrary, "replace_mesh_components_meshes_on_actors"):
-            unreal.EditorLevelLibrary.replace_mesh_components_meshes_on_actors(
-                actors_to_process,
-                mesh_to_replace,
-                new_mesh
-            )
-        else:
-            # Fallback to manual replacement if batch API is not available
-            for comp in all_mesh_components:
-                current_mesh = comp.static_mesh
-                should_replace = False
-                if not mesh_to_replace:
-                    if current_mesh != new_mesh:
-                        should_replace = True
-                elif current_mesh and current_mesh.get_path_name() == mesh_to_replace.get_path_name():
-                    if current_mesh.get_path_name() != new_mesh.get_path_name():
-                        should_replace = True
-                elif not current_mesh and not mesh_to_replace:
-                    should_replace = True
-                if should_replace:
-                    comp.set_static_mesh(new_mesh)
-        # Detect changes
-        changed_components_count = 0
-        affected_component_paths = []
-        unchanged_components_info = []
-        for comp in all_mesh_components:
-            before = initial_meshes_map.get(comp.get_path_name(), "")
-            after = comp.static_mesh.get_path_name() if comp.static_mesh else ""
-            owner_actor = comp.get_owner()
-            owner_name = owner_actor.get_name() if owner_actor else "Unknown"
-            if mesh_to_replace:
-                if before == mesh_to_replace.get_path_name() and after == new_mesh.get_path_name():
-                    changed_components_count += 1
-                    affected_component_paths.append(comp.get_path_name())
-                else:
-                    is_candidate = before == mesh_to_replace.get_path_name()
-                    unchanged_components_info.append({
-                        "component_path": comp.get_path_name(),
-                        "component_name": comp.get_name(),
-                        "actor_name": owner_name,
-                        "current_mesh": before,
-                        "is_candidate": is_candidate,
-                        "reason": (
-                            "Component is a candidate for replacement (matches mesh_to_be_replaced_path) but was not changed"
-                            if is_candidate else
-                            ("Current mesh doesn't match the mesh to be replaced" if before != mesh_to_replace.get_path_name() else "Failed to set new mesh")
-                        )
-                    })
-            else:
-                if before != after and after == new_mesh.get_path_name():
-                    changed_components_count += 1
-                    affected_component_paths.append(comp.get_path_name())
-                else:
-                    unchanged_components_info.append({
-                        "component_path": comp.get_path_name(),
-                        "component_name": comp.get_name(),
-                        "actor_name": owner_name,
-                        "current_mesh": before,
-                        "is_candidate": False,
-                        "reason": "Component already has the target mesh" if before == new_mesh.get_path_name() else "Failed to set new mesh"
-                    })
-        unchanged_components_info = unchanged_components_info if 'unchanged_components_info' in locals() else []
-        if changed_components_count > 0:
-            return json.dumps({
-                "success": True,
-                "message": f"Successfully replaced mesh on {changed_components_count} static mesh component(s) across {len(actors_to_process)} specified actor(s).",
-                "affected_actors_count": len(actors_to_process),
-                "affected_components_count": changed_components_count,
-                "affected_component_paths": affected_component_paths,
-                "unchanged_components": unchanged_components_info
-            })
-        else:
-            actors_materials_info = _get_materials_map_for_actors(actors_to_process)
-            actors_meshes_info = _get_meshes_map_for_actors(actors_to_process)
-            actors_skel_meshes_info = _get_skeletal_meshes_map_for_actors(actors_to_process)
-            unchanged_components_info = unchanged_components_info if 'unchanged_components_info' in locals() else []
-            return json.dumps({
-                "success": False,
-                "message": f"Failed to replace mesh. Target mesh '{mesh_to_be_replaced_path}' not found or not replaced on any static mesh components of specified actors.",
-                "current_materials": actors_materials_info,
-                "current_meshes": actors_meshes_info,
-                "current_skeletal_meshes": actors_skel_meshes_info,
-                "unchanged_components": unchanged_components_info
-            })
-    except FileNotFoundError as e:
-        unreal.log_error(f"MCP: Asset loading error in ue_replace_mesh_on_specified: {e}")
-        return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
-    except TypeError as e:
-        unreal.log_error(f"MCP: Asset type error in ue_replace_mesh_on_specified: {e}")
-        return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
+        return _replace_meshes_on_actors(actors, mesh_to_be_replaced_path, new_mesh_path, include_diagnostics=True)
     except Exception as e:
         unreal.log_error(f"MCP: Error in ue_replace_mesh_on_specified: {e}\n{traceback.format_exc()}")
         return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})
 
+
+# ---------------------------------------------------------------------------
+# Public actions — actor replacement
+# ---------------------------------------------------------------------------
+
 def ue_replace_selected_with_bp(blueprint_asset_path: str) -> str:
-    """Replaces the currently selected actors with new actors spawned from a specified Blueprint asset path using Unreal's official API."""
-    import unreal
-    import json
-    import traceback
+    """Replaces selected actors with new actors spawned from a Blueprint asset."""
     try:
-        selected_actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
-        if not selected_actors:
+        selected = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_selected_level_actors()
+        if not selected:
             return json.dumps({"success": False, "message": "No actors selected."})
-        # Check if the blueprint asset exists
+
         blueprint = unreal.EditorAssetLibrary.load_asset(blueprint_asset_path)
         if not blueprint:
             return json.dumps({"success": False, "message": f"Blueprint asset not found at path: {blueprint_asset_path}"})
-        # Use the official API
+
         unreal.EditorLevelLibrary.replace_selected_actors(blueprint_asset_path)
         return json.dumps({
             "success": True,
-            "message": f"Replaced {len(selected_actors)} actors with Blueprint '{blueprint_asset_path}' using official API.",
-            "replaced_actors_count": len(selected_actors)
+            "message": f"Replaced {len(selected)} actors with Blueprint '{blueprint_asset_path}'.",
+            "replaced_actors_count": len(selected),
         })
     except Exception as e:
         return json.dumps({"success": False, "message": str(e), "traceback": traceback.format_exc()})

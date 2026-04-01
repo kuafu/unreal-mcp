@@ -12,8 +12,8 @@ from unreal_mcp.tool_routers.blueprint_router import blueprint_mcp
 
 main_mcp = FastMCP(
     name="Unreal MCP Server",
-    description="Main MCP server for Unreal Engine integration, providing categorized tools for utility, asset, actor, and material operations.",
-    version="1.0.0"
+    instructions="Main MCP server for Unreal Engine integration, providing categorized tools for utility, asset, actor, and material operations.",
+    version="1.0.0",
 )
 
 # Mount the FastMCP sub-servers

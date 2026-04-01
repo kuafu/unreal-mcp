@@ -3,16 +3,17 @@
 # MCP Router for Behavior Tree Tools
 
 from typing import Annotated, Optional
-from pydantic import Field
-from fastmcp import FastMCP
 
-from unreal_mcp.core import send_unreal_action, ToolInputError
+from fastmcp import FastMCP
+from pydantic import Field
+
+from unreal_mcp.core import send_unreal_action
 
 BT_ACTIONS_MODULE = "UnrealMCPython.behavior_tree_actions"
 
 behavior_tree_mcp = FastMCP(
     name="BehaviorTreeMCP",
-    description="Tools for reading and creating Unreal Engine Behavior Tree and Blackboard assets."
+    instructions="Tools for reading and creating Unreal Engine Behavior Tree and Blackboard assets.",
 )
 
 # ─── Read Tools ───────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ BP_ACTIONS_MODULE = "UnrealMCPython.blueprint_actions"
 
 blueprint_mcp = FastMCP(
     name="BlueprintMCP",
-    description="Tools for reading and writing Blueprint graphs in Unreal Engine."
+    instructions="Tools for reading and writing Blueprint graphs in Unreal Engine.",
 )
 
 # ─── Read Tools ───────────────────────────────────────────────────────────────

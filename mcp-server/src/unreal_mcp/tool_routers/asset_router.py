@@ -2,15 +2,16 @@
 
 # MCP Router for Asset Tools
 
-from typing import Annotated, Optional, List
-from pydantic import Field
+from typing import Annotated, Optional
+
 from fastmcp import FastMCP
+from pydantic import Field
 
 from unreal_mcp.core import send_unreal_action, ToolInputError
 
 ASSET_ACTIONS_MODULE = "UnrealMCPython.asset_actions"
 
-asset_mcp = FastMCP(name="AssetMCP", description="Tools for managing and querying Unreal Engine assets.")
+asset_mcp = FastMCP(name="AssetMCP", instructions="Tools for managing and querying Unreal Engine assets.")
 
 @asset_mcp.tool(
     name="find",

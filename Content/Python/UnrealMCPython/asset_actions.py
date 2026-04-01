@@ -4,8 +4,6 @@ import unreal
 import json
 import traceback
 
-ASSET_ACTIONS_MODULE = "asset_actions"
-
 def ue_find_by_query(name : str = None, asset_type : str = None) -> str:
     """
     Returns a JSON list of asset paths under '/Game' matching the given query dict.
