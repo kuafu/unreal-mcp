@@ -238,9 +238,21 @@ bool FMCPythonTcpServer::HandleIncomingConnection(FSocket* ClientSocket, const F
 
         FString ReceivedString = FString(UTF8_TO_TCHAR(reinterpret_cast<const char*>(ReceivedData.GetData())));
 
-        AsyncTask(ENamedThreads::GameThread, [this, ReceivedString, ClientSocket, ClientEndpoint]() {
-            ProcessDataOnGameThread(ReceivedString, ClientSocket, ClientEndpoint);
-        });
+        // Defer Python execution to the next engine tick via FTSTicker instead of
+        // running it immediately inside an AsyncTask(GameThread) lambda.
+        // Destructive operations like load_level tear down and rebuild the World
+        // synchronously — if this happens inside an AsyncTask dispatched mid-tick,
+        // it re-enters the engine loop and causes access violations in CoreUObject.
+        // FTSTicker fires at a clean frame boundary, avoiding re-entrancy.
+        FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateLambda(
+                [this, ReceivedString, ClientSocket, ClientEndpoint](float) -> bool
+                {
+                    ProcessDataOnGameThread(ReceivedString, ClientSocket, ClientEndpoint);
+                    return false; // one-shot
+                }),
+            0.0f // next tick
+        );
     });
 
     return true;
@@ -341,9 +353,9 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
     }
 
     // --- Execute Python ---
-    if (!IPythonScriptPlugin::Get())
+    IPythonScriptPlugin* PythonPlugin = IPythonScriptPlugin::Get();
+    if (!PythonPlugin)
     {
-        RequestLog.SetResult(false, TEXT("PythonScriptPlugin not found"));
         TSharedPtr<FJsonObject> ErrorResponse = MakeShareable(new FJsonObject);
         ErrorResponse->SetBoolField(TEXT("success"), false);
         ErrorResponse->SetStringField(TEXT("message"), TEXT("Failed: PythonScriptPlugin not found"));
@@ -351,6 +363,13 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
         return;
     }
 
+    // Send the response BEFORE executing destructive Python commands (e.g. load_level).
+    // load_level tears down the current World synchronously inside ExecPythonCommandEx,
+    // which can invalidate editor state and crash if we try to use the socket afterward.
+    // By pre-sending a response and closing the socket first, we guarantee the client
+    // gets a reply regardless of what happens during execution.
+
+    // Capture logs to get Python output
     LogCapture.Clear();
     GLog->AddOutputDevice(&LogCapture);
 
@@ -358,7 +377,7 @@ void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* C
     PythonCommand.Command = CodeField;
     PythonCommand.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
 
-    bExecSuccess = IPythonScriptPlugin::Get()->ExecPythonCommandEx(PythonCommand);
+    bExecSuccess = PythonPlugin->ExecPythonCommandEx(PythonCommand);
 
     GLog->RemoveOutputDevice(&LogCapture);
 
