@@ -49,26 +49,9 @@ public:
 	uint16 GetListenPort() const { return ListenPort; }
 	FDateTime GetStartTime() const { return ServerStartTime; }
 
-	int32 GetTotalConnections() const { return TotalConnections; }
-	int32 GetTotalRequests() const { return TotalRequests; }
-	int32 GetSuccessfulRequests() const { return SuccessfulRequests; }
-	int32 GetFailedRequests() const { return FailedRequests; }
-
-	const TArray<FMCPConnectionRecord>& GetConnectionHistory() const { return ConnectionHistory; }
-	const TArray<FMCPRequestRecord>& GetRequestHistory() const { return RequestHistory; }
-
-	void ClearHistory()
-	{
-		ConnectionHistory.Empty();
-		RequestHistory.Empty();
-		TotalConnections = 0;
-		TotalRequests = 0;
-		SuccessfulRequests = 0;
-		FailedRequests = 0;
-	}
-
-	/** Used by MCP workbench request logging (scope exit). */
-	void AppendRequestRecord(const FMCPRequestRecord& Record);
+	/** Workbench telemetry — all diagnostics/debug data lives here. */
+	MCPWorkbench::FTelemetry& GetTelemetry() { return Telemetry; }
+	const MCPWorkbench::FTelemetry& GetTelemetry() const { return Telemetry; }
 
 private:
 	TSharedPtr<FTcpListener> TcpListener;
@@ -82,8 +65,6 @@ private:
 	void ProcessDataOnGameThread(const FString& Data, FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint);
 	void SendJsonResponse(TSharedPtr<FJsonObject> ResponseJson, FSocket* ClientSocket, bool bCloseSocket = true);
 
-	void RecordConnectionOnGameThread(const FIPv4Endpoint& ClientEndpoint);
-
 	// Native command handlers
 	void HandleLiveCodingCompile(TSharedPtr<FJsonObject> JsonObj, FSocket* ClientSocket);
 
@@ -91,13 +72,5 @@ private:
 	uint16 ListenPort = 0;
 	FDateTime ServerStartTime;
 
-	int32 TotalConnections = 0;
-	int32 TotalRequests = 0;
-	int32 SuccessfulRequests = 0;
-	int32 FailedRequests = 0;
-
-	TArray<FMCPConnectionRecord> ConnectionHistory;
-	TArray<FMCPRequestRecord> RequestHistory;
-
-	static constexpr int32 MaxHistoryItems = 500;
+	MCPWorkbench::FTelemetry Telemetry;
 };

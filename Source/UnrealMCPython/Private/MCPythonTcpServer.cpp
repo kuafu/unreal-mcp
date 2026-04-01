@@ -15,52 +15,35 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogMCPython, Log, All);
 
-namespace
+// MCPWorkbench::FRequestLogScope destructor — defined here to access JSON parsing.
+MCPWorkbench::FRequestLogScope::~FRequestLogScope()
 {
-	/** One log line per ProcessDataOnGameThread; runs on scope exit (including early return). */
-	struct FMCPRequestLogScope
+	if (!Telemetry)
 	{
-		FMCPythonTcpServer* Server = nullptr;
-		FString Data;
-		double StartSeconds = 0.0;
+		return;
+	}
 
-		FMCPRequestLogScope(FMCPythonTcpServer* InServer, const FString& InData)
-			: Server(InServer)
-			, Data(InData)
-			, StartSeconds(FPlatformTime::Seconds())
-		{
-		}
+	MCPWorkbench::FRequestRecord Rec;
+	Rec.Timestamp = FDateTime::Now();
+	Rec.DurationMs = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
 
-		~FMCPRequestLogScope()
-		{
-			if (!Server)
-			{
-				return;
-			}
+	TSharedPtr<FJsonObject> JsonObj;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Data);
+	const bool bParsed = FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid();
+	if (bParsed)
+	{
+		JsonObj->TryGetStringField(TEXT("type"), Rec.RequestType);
+		JsonObj->TryGetStringField(TEXT("module"), Rec.Module);
+		JsonObj->TryGetStringField(TEXT("function"), Rec.Function);
+		Rec.bSuccess = true;
+	}
+	else
+	{
+		Rec.bSuccess = false;
+		Rec.Message = TEXT("JSON parse error");
+	}
 
-			FMCPRequestRecord Rec;
-			Rec.Timestamp = FDateTime::Now();
-			Rec.DurationMs = (FPlatformTime::Seconds() - StartSeconds) * 1000.0;
-
-			TSharedPtr<FJsonObject> JsonObj;
-			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Data);
-			const bool bParsed = FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid();
-			if (bParsed)
-			{
-				JsonObj->TryGetStringField(TEXT("type"), Rec.RequestType);
-				JsonObj->TryGetStringField(TEXT("module"), Rec.Module);
-				JsonObj->TryGetStringField(TEXT("function"), Rec.Function);
-				Rec.bSuccess = true;
-			}
-			else
-			{
-				Rec.bSuccess = false;
-				Rec.Message = TEXT("JSON parse error");
-			}
-
-			Server->AppendRequestRecord(Rec);
-		}
-	};
+	Telemetry->RecordRequest(Rec);
 }
 
 // Helper function to convert FJsonValue to Python literal string
@@ -195,37 +178,6 @@ bool FMCPythonTcpServer::Start(const FString& InIP, uint16 InPort)
     return true;
 }
 
-void FMCPythonTcpServer::RecordConnectionOnGameThread(const FIPv4Endpoint& ClientEndpoint)
-{
-	TotalConnections++;
-	FMCPConnectionRecord Rec;
-	Rec.ConnectedAt = FDateTime::Now();
-	Rec.ClientEndpoint = ClientEndpoint.ToString();
-	Rec.bSuccess = true;
-	ConnectionHistory.Add(Rec);
-	while (ConnectionHistory.Num() > MaxHistoryItems)
-	{
-		ConnectionHistory.RemoveAt(0);
-	}
-}
-
-void FMCPythonTcpServer::AppendRequestRecord(const FMCPRequestRecord& Record)
-{
-	TotalRequests++;
-	RequestHistory.Add(Record);
-	while (RequestHistory.Num() > MaxHistoryItems)
-	{
-		RequestHistory.RemoveAt(0);
-	}
-	if (Record.bSuccess)
-	{
-		SuccessfulRequests++;
-	}
-	else
-	{
-		FailedRequests++;
-	}
-}
 
 void FMCPythonTcpServer::Stop()
 {
@@ -240,7 +192,7 @@ bool FMCPythonTcpServer::HandleIncomingConnection(FSocket* ClientSocket, const F
 
     AsyncTask(ENamedThreads::GameThread, [this, ClientEndpoint]()
     {
-        RecordConnectionOnGameThread(ClientEndpoint);
+        Telemetry.RecordConnection(ClientEndpoint.ToString());
     });
 
     AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, ClientSocket, ClientEndpoint]() {
@@ -270,7 +222,7 @@ bool FMCPythonTcpServer::HandleIncomingConnection(FSocket* ClientSocket, const F
 
 void FMCPythonTcpServer::ProcessDataOnGameThread(const FString& Data, FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
-    FMCPRequestLogScope RequestLog(this, Data);
+    MCPWorkbench::FRequestLogScope RequestLog(&Telemetry, Data);
 
     UE_LOG(LogMCPython, Verbose, TEXT("Processing Data on Game Thread: %s"), *Data);
 
