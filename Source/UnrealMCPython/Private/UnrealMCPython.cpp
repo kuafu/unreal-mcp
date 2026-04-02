@@ -12,12 +12,12 @@
 
 #define LOCTEXT_NAMESPACE "FUnrealMCPythonModule"
 
+const TCHAR* FUnrealMCPythonModule::DefaultIP = TEXT("127.0.0.1");
+
 void FUnrealMCPythonModule::StartupModule()
 {
-	static const uint16 SERVER_PORT = 12029;
-	static const FString SERVER_IP = TEXT("127.0.0.1");
 	TcpServer = MakeUnique<FMCPythonTcpServer>();
-	TcpServer->Start(SERVER_IP, SERVER_PORT);
+	TcpServer->Start(DefaultIP, DefaultPort);
 }
 
 void FUnrealMCPythonModule::ShutdownModule()
@@ -26,6 +26,27 @@ void FUnrealMCPythonModule::ShutdownModule()
 	{
 		TcpServer->Stop();
 		TcpServer.Reset();
+	}
+}
+
+void FUnrealMCPythonModule::StartServer()
+{
+	if (TcpServer && TcpServer->IsRunning())
+	{
+		return;
+	}
+	if (!TcpServer)
+	{
+		TcpServer = MakeUnique<FMCPythonTcpServer>();
+	}
+	TcpServer->Start(DefaultIP, DefaultPort);
+}
+
+void FUnrealMCPythonModule::StopServer()
+{
+	if (TcpServer && TcpServer->IsRunning())
+	{
+		TcpServer->Stop();
 	}
 }
 

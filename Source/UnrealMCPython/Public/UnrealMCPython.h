@@ -6,7 +6,7 @@
 #include "Modules/ModuleManager.h"
 #include "MCPythonTcpServer.h"
 
-class FUnrealMCPythonModule : public IModuleInterface
+class UNREALMCPYTHON_API FUnrealMCPythonModule : public IModuleInterface
 {
 public:
 	/** IModuleInterface implementation */
@@ -21,6 +21,15 @@ public:
 
 	FMCPythonTcpServer* GetTcpServer() { return TcpServer.Get(); }
 
+	/** Start the TCP server (no-op if already running). */
+	void StartServer();
+
+	/** Stop the TCP server (no-op if already stopped). */
+	void StopServer();
+
 private:
 	TUniquePtr<FMCPythonTcpServer> TcpServer;
+
+	static const uint16 DefaultPort = 12029;
+	static const TCHAR* DefaultIP;
 };
