@@ -55,6 +55,10 @@ public class UnrealMCPython : ModuleRules
 				"AIGraph",
 				"BehaviorTreeEditor",
 				"LiveCoding",
+				// UserWidget / UMG support
+				"UMG",
+				"UMGEditor",
+				"PropertyEditor",
 			}
 			);
 		

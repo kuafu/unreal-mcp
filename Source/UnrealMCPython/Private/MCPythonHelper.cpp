@@ -42,6 +42,34 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Engine/Blueprint.h"
+// UserWidget / UMG includes
+#include "WidgetBlueprint.h"
+#include "Blueprint/WidgetTree.h"
+#include "Blueprint/UserWidget.h"
+#include "Components/PanelWidget.h"
+#include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/TextBlock.h"
+#include "Components/Button.h"
+#include "Components/Image.h"
+#include "Components/Border.h"
+#include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/VerticalBox.h"
+#include "Components/VerticalBoxSlot.h"
+#include "Components/SizeBox.h"
+#include "Components/Overlay.h"
+#include "Components/ScrollBox.h"
+#include "Components/ProgressBar.h"
+#include "Components/Slider.h"
+#include "Components/EditableTextBox.h"
+#include "Components/CheckBox.h"
+#include "Components/RichTextBlock.h"
+#include "Components/Spacer.h"
+#include "Components/NamedSlot.h"
+#include "WidgetBlueprintFactory.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Misc/PackageName.h"
 
 TArray<UObject*> UMCPythonHelper::GetAllEditedAssets()
 {
@@ -1790,5 +1818,622 @@ FString UMCPythonHelper::CompileBlueprint(UBlueprint* Blueprint)
         bHasError ? TEXT("Blueprint compilation failed. Check the output log for details.")
                   : TEXT("Blueprint compiled successfully."));
 
+    return SerializeJsonObj(Result);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UserWidget Blueprint Helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+static FString MakeWidgetError(const FString& Msg)
+{
+    TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject());
+    Obj->SetBoolField(TEXT("success"), false);
+    Obj->SetStringField(TEXT("message"), Msg);
+    return SerializeJsonObj(Obj);
+}
+
+static FString GetVisibilityString(ESlateVisibility Vis)
+{
+    switch (Vis)
+    {
+    case ESlateVisibility::Visible:              return TEXT("Visible");
+    case ESlateVisibility::Hidden:               return TEXT("Hidden");
+    case ESlateVisibility::Collapsed:            return TEXT("Collapsed");
+    case ESlateVisibility::HitTestInvisible:     return TEXT("HitTestInvisible");
+    case ESlateVisibility::SelfHitTestInvisible: return TEXT("SelfHitTestInvisible");
+    default:                                     return TEXT("Visible");
+    }
+}
+
+static ESlateVisibility ParseVisibility(const FString& Str)
+{
+    if (Str == TEXT("Hidden"))               return ESlateVisibility::Hidden;
+    if (Str == TEXT("Collapsed"))            return ESlateVisibility::Collapsed;
+    if (Str == TEXT("HitTestInvisible"))     return ESlateVisibility::HitTestInvisible;
+    if (Str == TEXT("SelfHitTestInvisible")) return ESlateVisibility::SelfHitTestInvisible;
+    return ESlateVisibility::Visible;
+}
+
+/** Recursively serialize a widget and its children to JSON. */
+static TSharedPtr<FJsonObject> SerializeWidgetNode(UWidget* Widget)
+{
+    TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject());
+    Obj->SetStringField(TEXT("name"), Widget->GetName());
+    Obj->SetStringField(TEXT("type"), Widget->GetClass()->GetName());
+    Obj->SetBoolField(TEXT("is_variable"), Widget->bIsVariable);
+    Obj->SetStringField(TEXT("visibility"), GetVisibilityString(Widget->GetVisibility()));
+
+    // Slot properties (layout within parent)
+    if (Widget->Slot)
+    {
+        TSharedPtr<FJsonObject> SlotObj = MakeShareable(new FJsonObject());
+        SlotObj->SetStringField(TEXT("slot_type"), Widget->Slot->GetClass()->GetName());
+
+        if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Widget->Slot))
+        {
+            FVector2D Pos  = CS->GetPosition();
+            FVector2D Size = CS->GetSize();
+            FVector2D Align = CS->GetAlignment();
+            FAnchorData Layout = CS->GetLayout();
+
+            auto V2DArr = [](FVector2D V) -> TArray<TSharedPtr<FJsonValue>> {
+                return { MakeShareable(new FJsonValueNumber(V.X)),
+                         MakeShareable(new FJsonValueNumber(V.Y)) };
+            };
+            SlotObj->SetArrayField(TEXT("position"),  V2DArr(Pos));
+            SlotObj->SetArrayField(TEXT("size"),       V2DArr(Size));
+            SlotObj->SetArrayField(TEXT("alignment"),  V2DArr(Align));
+            SlotObj->SetNumberField(TEXT("z_order"), CS->GetZOrder());
+
+            TSharedPtr<FJsonObject> AnchObj = MakeShareable(new FJsonObject());
+            AnchObj->SetNumberField(TEXT("min_x"), Layout.Anchors.Minimum.X);
+            AnchObj->SetNumberField(TEXT("min_y"), Layout.Anchors.Minimum.Y);
+            AnchObj->SetNumberField(TEXT("max_x"), Layout.Anchors.Maximum.X);
+            AnchObj->SetNumberField(TEXT("max_y"), Layout.Anchors.Maximum.Y);
+            SlotObj->SetObjectField(TEXT("anchors"), AnchObj);
+        }
+        Obj->SetObjectField(TEXT("slot"), SlotObj);
+    }
+
+    // Type-specific properties
+    if (UTextBlock* TB = Cast<UTextBlock>(Widget))
+        Obj->SetStringField(TEXT("text"), TB->GetText().ToString());
+    else if (UEditableTextBox* ETB = Cast<UEditableTextBox>(Widget))
+        Obj->SetStringField(TEXT("text"), ETB->GetText().ToString());
+    else if (UProgressBar* PB = Cast<UProgressBar>(Widget))
+        Obj->SetNumberField(TEXT("percent"), PB->GetPercent());
+    else if (USlider* SL = Cast<USlider>(Widget))
+        Obj->SetNumberField(TEXT("value"), SL->GetValue());
+
+    // Children
+    if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+    {
+        int32 Count = Panel->GetChildrenCount();
+        if (Count > 0)
+        {
+            TArray<TSharedPtr<FJsonValue>> ChildArr;
+            for (int32 i = 0; i < Count; ++i)
+            {
+                if (UWidget* Child = Panel->GetChildAt(i))
+                    ChildArr.Add(MakeShareable(new FJsonValueObject(SerializeWidgetNode(Child))));
+            }
+            Obj->SetArrayField(TEXT("children"), ChildArr);
+        }
+    }
+
+    return Obj;
+}
+
+/** Resolve a short type name (e.g. "TextBlock") to its UClass. */
+static UClass* ResolveWidgetClass(const FString& TypeName)
+{
+    // Static lookup table for common widget types
+    static const TMap<FString, UClass*(*)()> ClassGetters = {
+        { TEXT("CanvasPanel"),      []()->UClass*{ return UCanvasPanel::StaticClass(); } },
+        { TEXT("TextBlock"),        []()->UClass*{ return UTextBlock::StaticClass(); } },
+        { TEXT("Button"),           []()->UClass*{ return UButton::StaticClass(); } },
+        { TEXT("Image"),            []()->UClass*{ return UImage::StaticClass(); } },
+        { TEXT("Border"),           []()->UClass*{ return UBorder::StaticClass(); } },
+        { TEXT("HorizontalBox"),    []()->UClass*{ return UHorizontalBox::StaticClass(); } },
+        { TEXT("VerticalBox"),      []()->UClass*{ return UVerticalBox::StaticClass(); } },
+        { TEXT("SizeBox"),          []()->UClass*{ return USizeBox::StaticClass(); } },
+        { TEXT("Overlay"),          []()->UClass*{ return UOverlay::StaticClass(); } },
+        { TEXT("ScrollBox"),        []()->UClass*{ return UScrollBox::StaticClass(); } },
+        { TEXT("ProgressBar"),      []()->UClass*{ return UProgressBar::StaticClass(); } },
+        { TEXT("Slider"),           []()->UClass*{ return USlider::StaticClass(); } },
+        { TEXT("EditableTextBox"),  []()->UClass*{ return UEditableTextBox::StaticClass(); } },
+        { TEXT("CheckBox"),         []()->UClass*{ return UCheckBox::StaticClass(); } },
+        { TEXT("RichTextBlock"),    []()->UClass*{ return URichTextBlock::StaticClass(); } },
+        { TEXT("Spacer"),           []()->UClass*{ return USpacer::StaticClass(); } },
+        { TEXT("NamedSlot"),        []()->UClass*{ return UNamedSlot::StaticClass(); } },
+    };
+
+    if (const auto* Getter = ClassGetters.Find(TypeName))
+        return (*Getter)();
+
+    // Fallback: dynamic lookup in /Script/UMG
+    FString FullPath = TEXT("/Script/UMG.") + TypeName;
+    return FindObject<UClass>(nullptr, *FullPath);
+}
+
+/** Apply slot (layout) properties to a widget's slot. */
+static void ApplySlotProperties(UPanelSlot* Slot, const TSharedPtr<FJsonObject>& SlotJson)
+{
+    if (!Slot || !SlotJson.IsValid()) return;
+
+    if (UCanvasPanelSlot* CS = Cast<UCanvasPanelSlot>(Slot))
+    {
+        if (SlotJson->HasField(TEXT("position")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Arr = SlotJson->GetArrayField(TEXT("position"));
+            if (Arr.Num() >= 2)
+                CS->SetPosition(FVector2D(Arr[0]->AsNumber(), Arr[1]->AsNumber()));
+        }
+        if (SlotJson->HasField(TEXT("size")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Arr = SlotJson->GetArrayField(TEXT("size"));
+            if (Arr.Num() >= 2)
+                CS->SetSize(FVector2D(Arr[0]->AsNumber(), Arr[1]->AsNumber()));
+        }
+        if (SlotJson->HasField(TEXT("alignment")))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Arr = SlotJson->GetArrayField(TEXT("alignment"));
+            if (Arr.Num() >= 2)
+                CS->SetAlignment(FVector2D(Arr[0]->AsNumber(), Arr[1]->AsNumber()));
+        }
+        if (SlotJson->HasField(TEXT("z_order")))
+            CS->SetZOrder((int32)SlotJson->GetNumberField(TEXT("z_order")));
+        if (SlotJson->HasField(TEXT("anchors")))
+        {
+            const TSharedPtr<FJsonObject>& AObj = SlotJson->GetObjectField(TEXT("anchors"));
+            FAnchors Anch;
+            Anch.Minimum.X = AObj->HasField(TEXT("min_x")) ? (float)AObj->GetNumberField(TEXT("min_x")) : 0.f;
+            Anch.Minimum.Y = AObj->HasField(TEXT("min_y")) ? (float)AObj->GetNumberField(TEXT("min_y")) : 0.f;
+            Anch.Maximum.X = AObj->HasField(TEXT("max_x")) ? (float)AObj->GetNumberField(TEXT("max_x")) : 0.f;
+            Anch.Maximum.Y = AObj->HasField(TEXT("max_y")) ? (float)AObj->GetNumberField(TEXT("max_y")) : 0.f;
+            CS->SetAnchors(Anch);
+        }
+    }
+    else if (UHorizontalBoxSlot* HS = Cast<UHorizontalBoxSlot>(Slot))
+    {
+        if (SlotJson->HasField(TEXT("fill_type")))
+        {
+            FString FT = SlotJson->GetStringField(TEXT("fill_type"));
+            FSlateChildSize SZ;
+            SZ.SizeRule = (FT == TEXT("Fill")) ? ESlateSizeRule::Fill : ESlateSizeRule::Automatic;
+            if (SlotJson->HasField(TEXT("fill_value")))
+                SZ.Value = (float)SlotJson->GetNumberField(TEXT("fill_value"));
+            HS->SetSize(SZ);
+        }
+    }
+    else if (UVerticalBoxSlot* VS = Cast<UVerticalBoxSlot>(Slot))
+    {
+        if (SlotJson->HasField(TEXT("fill_type")))
+        {
+            FString FT = SlotJson->GetStringField(TEXT("fill_type"));
+            FSlateChildSize SZ;
+            SZ.SizeRule = (FT == TEXT("Fill")) ? ESlateSizeRule::Fill : ESlateSizeRule::Automatic;
+            if (SlotJson->HasField(TEXT("fill_value")))
+                SZ.Value = (float)SlotJson->GetNumberField(TEXT("fill_value"));
+            VS->SetSize(SZ);
+        }
+    }
+}
+
+// ─── GetWidgetTree ─────────────────────────────────────────────────────────────
+
+FString UMCPythonHelper::GetWidgetTree(UWidgetBlueprint* WidgetBlueprint)
+{
+    if (!WidgetBlueprint) return MakeWidgetError(TEXT("WidgetBlueprint is null."));
+
+    UWidgetTree* Tree = WidgetBlueprint->WidgetTree;
+    if (!Tree) return MakeWidgetError(TEXT("WidgetTree is null."));
+
+    TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset"), WidgetBlueprint->GetPathName());
+
+    if (Tree->RootWidget)
+        Result->SetObjectField(TEXT("root"), SerializeWidgetNode(Tree->RootWidget));
+    else
+        Result->SetField(TEXT("root"), MakeShareable(new FJsonValueNull()));
+
+    // Also list all named widgets (variables)
+    TArray<TSharedPtr<FJsonValue>> AllWidgets;
+    Tree->ForEachWidget([&](UWidget* W) {
+        TSharedPtr<FJsonObject> Info = MakeShareable(new FJsonObject());
+        Info->SetStringField(TEXT("name"), W->GetName());
+        Info->SetStringField(TEXT("type"), W->GetClass()->GetName());
+        Info->SetBoolField(TEXT("is_variable"), W->bIsVariable);
+        if (W->GetParent())
+            Info->SetStringField(TEXT("parent"), W->GetParent()->GetName());
+        AllWidgets.Add(MakeShareable(new FJsonValueObject(Info)));
+    });
+    Result->SetArrayField(TEXT("all_widgets"), AllWidgets);
+
+    return SerializeJsonObj(Result);
+}
+
+// ─── GetWidgetProperties ───────────────────────────────────────────────────────
+
+FString UMCPythonHelper::GetWidgetProperties(UWidgetBlueprint* WidgetBlueprint, const FString& WidgetName)
+{
+    if (!WidgetBlueprint) return MakeWidgetError(TEXT("WidgetBlueprint is null."));
+
+    UWidget* Widget = WidgetBlueprint->WidgetTree->FindWidget(*WidgetName);
+    if (!Widget)
+        return MakeWidgetError(FString::Printf(TEXT("Widget '%s' not found in tree."), *WidgetName));
+
+    TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetObjectField(TEXT("widget"), SerializeWidgetNode(Widget));
+    return SerializeJsonObj(Result);
+}
+
+// ─── CreateWidgetBlueprint ────────────────────────────────────────────────────
+
+FString UMCPythonHelper::CreateWidgetBlueprint(const FString& AssetName, const FString& AssetPath)
+{
+    if (AssetName.IsEmpty()) return MakeWidgetError(TEXT("AssetName is empty."));
+
+    // Build sanitized package name
+    FString PackageName = AssetPath / AssetName;
+    // Remove double slashes
+    PackageName = PackageName.Replace(TEXT("//"), TEXT("/"));
+
+    UPackage* Package = CreatePackage(*PackageName);
+    if (!Package) return MakeWidgetError(FString::Printf(TEXT("Failed to create package: %s"), *PackageName));
+
+    // Use UWidgetBlueprintFactory to create the asset
+    UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
+    Factory->ParentClass = UUserWidget::StaticClass();
+
+    EObjectFlags Flags = RF_Public | RF_Standalone | RF_Transactional;
+    UObject* NewAsset = Factory->FactoryCreateNew(
+        UWidgetBlueprint::StaticClass(), Package, *AssetName, Flags, nullptr, GWarn);
+
+    UWidgetBlueprint* WidgetBP = Cast<UWidgetBlueprint>(NewAsset);
+    if (!WidgetBP) return MakeWidgetError(TEXT("Failed to create UWidgetBlueprint via factory."));
+
+    // Ensure CanvasPanel root
+    UWidgetTree* Tree = WidgetBP->WidgetTree;
+    if (!Tree->RootWidget)
+    {
+        UCanvasPanel* Canvas = Tree->ConstructWidget<UCanvasPanel>(
+            UCanvasPanel::StaticClass(), TEXT("CanvasPanel_0"));
+        Tree->RootWidget = Canvas;
+    }
+
+    Package->MarkPackageDirty();
+    FAssetRegistryModule::AssetCreated(WidgetBP);
+    FKismetEditorUtilities::CompileBlueprint(WidgetBP);
+
+    TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), PackageName);
+    Result->SetStringField(TEXT("message"),
+        FString::Printf(TEXT("Created UserWidget Blueprint: %s"), *PackageName));
+    return SerializeJsonObj(Result);
+}
+
+// ─── AddWidgetElement ─────────────────────────────────────────────────────────
+
+FString UMCPythonHelper::AddWidgetElement(UWidgetBlueprint* WidgetBlueprint,
+    const FString& ElementType, const FString& ElementName,
+    const FString& ParentName, const FString& SlotPropsJson)
+{
+    if (!WidgetBlueprint) return MakeWidgetError(TEXT("WidgetBlueprint is null."));
+
+    UClass* WidgetClass = ResolveWidgetClass(ElementType);
+    if (!WidgetClass)
+        return MakeWidgetError(FString::Printf(TEXT("Unknown widget type: '%s'."), *ElementType));
+    if (!WidgetClass->IsChildOf(UWidget::StaticClass()))
+        return MakeWidgetError(FString::Printf(TEXT("'%s' is not a UWidget subclass."), *ElementType));
+
+    UWidgetTree* Tree = WidgetBlueprint->WidgetTree;
+
+    // Check name collision
+    if (Tree->FindWidget(*ElementName))
+        return MakeWidgetError(FString::Printf(TEXT("Widget named '%s' already exists."), *ElementName));
+
+    // Create the widget via WidgetTree
+    UWidget* NewWidget = Tree->ConstructWidget<UWidget>(WidgetClass, *ElementName);
+    if (!NewWidget)
+        return MakeWidgetError(FString::Printf(TEXT("Failed to construct widget of type '%s'."), *ElementType));
+
+    // Register GUID (required to avoid compiler errors)
+    WidgetBlueprint->WidgetVariableNameToGuidMap.Add(NewWidget->GetFName(), FGuid::NewGuid());
+
+    // Find parent panel
+    UPanelWidget* ParentPanel = nullptr;
+    if (ParentName.IsEmpty())
+    {
+        ParentPanel = Cast<UPanelWidget>(Tree->RootWidget);
+    }
+    else
+    {
+        UWidget* ParentWidget = Tree->FindWidget(*ParentName);
+        if (!ParentWidget)
+            return MakeWidgetError(FString::Printf(TEXT("Parent widget '%s' not found."), *ParentName));
+        ParentPanel = Cast<UPanelWidget>(ParentWidget);
+        if (!ParentPanel)
+            return MakeWidgetError(FString::Printf(
+                TEXT("Parent '%s' is not a panel widget (type: %s)."),
+                *ParentName, *ParentWidget->GetClass()->GetName()));
+    }
+
+    if (!ParentPanel && !ParentName.IsEmpty())
+        return MakeWidgetError(TEXT("No valid parent panel found."));
+
+    // Attach to parent or set as root
+    UPanelSlot* NewSlot = nullptr;
+    if (ParentPanel)
+    {
+        NewSlot = ParentPanel->AddChild(NewWidget);
+    }
+    else
+    {
+        // No root exists: set as root
+        Tree->RootWidget = NewWidget;
+    }
+
+    // Apply slot properties
+    if (NewSlot && !SlotPropsJson.IsEmpty() && SlotPropsJson != TEXT("{}"))
+    {
+        TSharedPtr<FJsonObject> SlotJson;
+        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(SlotPropsJson);
+        if (FJsonSerializer::Deserialize(Reader, SlotJson) && SlotJson.IsValid())
+            ApplySlotProperties(NewSlot, SlotJson);
+    }
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("widget_name"), NewWidget->GetName());
+    Result->SetStringField(TEXT("widget_type"), NewWidget->GetClass()->GetName());
+    if (ParentPanel)
+        Result->SetStringField(TEXT("parent"), ParentPanel->GetName());
+    Result->SetStringField(TEXT("message"),
+        FString::Printf(TEXT("Added '%s' (%s) to '%s'."),
+            *NewWidget->GetName(), *ElementType,
+            ParentPanel ? *ParentPanel->GetName() : TEXT("root")));
+    return SerializeJsonObj(Result);
+}
+
+// ─── RemoveWidgetElement ──────────────────────────────────────────────────────
+
+FString UMCPythonHelper::RemoveWidgetElement(UWidgetBlueprint* WidgetBlueprint, const FString& WidgetName)
+{
+    if (!WidgetBlueprint) return MakeWidgetError(TEXT("WidgetBlueprint is null."));
+
+    UWidgetTree* Tree = WidgetBlueprint->WidgetTree;
+    UWidget* Widget = Tree->FindWidget(*WidgetName);
+    if (!Widget)
+        return MakeWidgetError(FString::Printf(TEXT("Widget '%s' not found."), *WidgetName));
+
+    // Cannot remove root widget
+    if (Widget == Tree->RootWidget)
+        return MakeWidgetError(TEXT("Cannot remove the root widget. Use widget_set_properties to hide it instead."));
+
+    FString ParentName;
+    if (UPanelWidget* Parent = Widget->GetParent())
+    {
+        ParentName = Parent->GetName();
+        Parent->RemoveChild(Widget);
+    }
+
+    // Remove GUID mapping
+    WidgetBlueprint->WidgetVariableNameToGuidMap.Remove(Widget->GetFName());
+
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("message"),
+        FString::Printf(TEXT("Removed widget '%s' from '%s'."), *WidgetName, *ParentName));
+    return SerializeJsonObj(Result);
+}
+
+// ─── SetWidgetProperties ──────────────────────────────────────────────────────
+
+FString UMCPythonHelper::SetWidgetProperties(UWidgetBlueprint* WidgetBlueprint,
+    const FString& WidgetName, const FString& PropertiesJson)
+{
+    if (!WidgetBlueprint) return MakeWidgetError(TEXT("WidgetBlueprint is null."));
+
+    UWidget* Widget = WidgetBlueprint->WidgetTree->FindWidget(*WidgetName);
+    if (!Widget)
+        return MakeWidgetError(FString::Printf(TEXT("Widget '%s' not found."), *WidgetName));
+
+    TSharedPtr<FJsonObject> Props;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PropertiesJson);
+    if (!FJsonSerializer::Deserialize(Reader, Props) || !Props.IsValid())
+        return MakeWidgetError(TEXT("Invalid properties JSON."));
+
+    TSharedPtr<FJsonObject> SlotProps = MakeShareable(new FJsonObject());
+    TArray<FString> SetKeys;
+
+    for (const auto& Pair : Props->Values)
+    {
+        const FString& Key = Pair.Key;
+
+        // ── Slot properties (slot_ prefix) ──────────────────────────────────
+        if (Key.StartsWith(TEXT("slot_")))
+        {
+            FString SlotKey = Key.Mid(5); // strip "slot_"
+            SlotProps->SetField(SlotKey, Pair.Value);
+            continue;
+        }
+
+        // ── Common widget properties ─────────────────────────────────────────
+        if (Key == TEXT("visibility"))
+        {
+            Widget->SetVisibility(ParseVisibility(Pair.Value->AsString()));
+            SetKeys.Add(Key);
+        }
+        else if (Key == TEXT("is_enabled"))
+        {
+            Widget->SetIsEnabled(Pair.Value->AsBool());
+            SetKeys.Add(Key);
+        }
+        else if (Key == TEXT("tool_tip_text"))
+        {
+            Widget->SetToolTipText(FText::FromString(Pair.Value->AsString()));
+            SetKeys.Add(Key);
+        }
+
+        // ── TextBlock ────────────────────────────────────────────────────────
+        else if (Key == TEXT("text"))
+        {
+            if (UTextBlock* TB = Cast<UTextBlock>(Widget))
+            {
+                TB->SetText(FText::FromString(Pair.Value->AsString()));
+                SetKeys.Add(Key);
+            }
+            else if (UEditableTextBox* ETB = Cast<UEditableTextBox>(Widget))
+            {
+                ETB->SetText(FText::FromString(Pair.Value->AsString()));
+                SetKeys.Add(Key);
+            }
+        }
+        else if (Key == TEXT("font_size"))
+        {
+            if (UTextBlock* TB = Cast<UTextBlock>(Widget))
+            {
+                FSlateFontInfo Font = TB->GetFont();
+                Font.Size = (int32)Pair.Value->AsNumber();
+                TB->SetFont(Font);
+                SetKeys.Add(Key);
+            }
+        }
+        else if (Key == TEXT("color_and_opacity"))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Arr = Pair.Value->AsArray();
+            if (Arr.Num() >= 4)
+            {
+                FLinearColor C(Arr[0]->AsNumber(), Arr[1]->AsNumber(),
+                               Arr[2]->AsNumber(), Arr[3]->AsNumber());
+                if (UTextBlock* TB = Cast<UTextBlock>(Widget))
+                    TB->SetColorAndOpacity(FSlateColor(C));
+                else if (UImage* Img = Cast<UImage>(Widget))
+                    Img->SetColorAndOpacity(C);
+                else if (UBorder* Bdr = Cast<UBorder>(Widget))
+                    Bdr->SetContentColorAndOpacity(C);
+                SetKeys.Add(Key);
+            }
+        }
+        else if (Key == TEXT("justification"))
+        {
+            if (UTextBlock* TB = Cast<UTextBlock>(Widget))
+            {
+                FString JStr = Pair.Value->AsString();
+                ETextJustify::Type J = ETextJustify::Left;
+                if (JStr == TEXT("Center")) J = ETextJustify::Center;
+                else if (JStr == TEXT("Right")) J = ETextJustify::Right;
+                TB->SetJustification(J);
+                SetKeys.Add(Key);
+            }
+        }
+
+        // ── Button ───────────────────────────────────────────────────────────
+        else if (Key == TEXT("background_color"))
+        {
+            const TArray<TSharedPtr<FJsonValue>>& Arr = Pair.Value->AsArray();
+            if (Arr.Num() >= 4)
+            {
+                FLinearColor C(Arr[0]->AsNumber(), Arr[1]->AsNumber(),
+                               Arr[2]->AsNumber(), Arr[3]->AsNumber());
+                if (UButton* Btn = Cast<UButton>(Widget))
+                    Btn->SetBackgroundColor(C);
+                SetKeys.Add(Key);
+            }
+        }
+
+        // ── Image ────────────────────────────────────────────────────────────
+        else if (Key == TEXT("brush"))
+        {
+            if (UImage* Img = Cast<UImage>(Widget))
+            {
+                FString BrushPath = Pair.Value->AsString();
+                // Try loading as Texture2D first, then MaterialInterface
+                if (UTexture2D* Tex = LoadObject<UTexture2D>(nullptr, *BrushPath))
+                {
+                    Img->SetBrushFromTexture(Tex, false);
+                    SetKeys.Add(Key);
+                }
+                else if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *BrushPath))
+                {
+                    Img->SetBrushFromMaterial(Mat);
+                    SetKeys.Add(Key);
+                }
+            }
+        }
+
+        // ── ProgressBar ──────────────────────────────────────────────────────
+        else if (Key == TEXT("percent"))
+        {
+            if (UProgressBar* PB = Cast<UProgressBar>(Widget))
+            {
+                PB->SetPercent((float)Pair.Value->AsNumber());
+                SetKeys.Add(Key);
+            }
+        }
+
+        // ── Slider ───────────────────────────────────────────────────────────
+        else if (Key == TEXT("value"))
+        {
+            if (USlider* SL = Cast<USlider>(Widget))
+            {
+                SL->SetValue((float)Pair.Value->AsNumber());
+                SetKeys.Add(Key);
+            }
+        }
+
+        // ── SizeBox ──────────────────────────────────────────────────────────
+        else if (Key == TEXT("width_override"))
+        {
+            if (USizeBox* SB = Cast<USizeBox>(Widget))
+            {
+                SB->SetWidthOverride((float)Pair.Value->AsNumber());
+                SetKeys.Add(Key);
+            }
+        }
+        else if (Key == TEXT("height_override"))
+        {
+            if (USizeBox* SB = Cast<USizeBox>(Widget))
+            {
+                SB->SetHeightOverride((float)Pair.Value->AsNumber());
+                SetKeys.Add(Key);
+            }
+        }
+    } // end for each property
+
+    // Apply slot properties if any
+    if (SlotProps->Values.Num() > 0 && Widget->Slot)
+        ApplySlotProperties(Widget->Slot, SlotProps);
+
+    FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+
+    TSharedPtr<FJsonObject> Result = MakeShareable(new FJsonObject());
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("widget_name"), WidgetName);
+    TArray<TSharedPtr<FJsonValue>> KeyArr;
+    for (const FString& K : SetKeys)
+        KeyArr.Add(MakeShareable(new FJsonValueString(K)));
+    Result->SetArrayField(TEXT("set_properties"), KeyArr);
+    if (SlotProps->Values.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> SlotKeyArr;
+        for (const auto& P : SlotProps->Values)
+            SlotKeyArr.Add(MakeShareable(new FJsonValueString(P.Key)));
+        Result->SetArrayField(TEXT("set_slot_properties"), SlotKeyArr);
+    }
+    Result->SetStringField(TEXT("message"),
+        FString::Printf(TEXT("Updated %d properties on widget '%s'."),
+            SetKeys.Num() + SlotProps->Values.Num(), *WidgetName));
     return SerializeJsonObj(Result);
 }

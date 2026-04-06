@@ -7,6 +7,7 @@
 #include "EdGraph/EdGraphPin.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
+#include "WidgetBlueprint.h"
 #include "MCPythonHelper.generated.h"
 
 
@@ -162,4 +163,33 @@ public:
     /** Compile a Blueprint and return the result */
     UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
     static FString CompileBlueprint(UBlueprint* Blueprint);
+
+    // ─── UserWidget Blueprint Helpers ─────────────────────────────────────────
+
+    /** Get the full widget hierarchy of a UserWidget Blueprint as JSON */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString GetWidgetTree(UWidgetBlueprint* WidgetBlueprint);
+
+    /** Get properties of a specific widget element as JSON */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString GetWidgetProperties(UWidgetBlueprint* WidgetBlueprint, const FString& WidgetName);
+
+    /** Create a new UserWidget Blueprint asset at the given content path */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString CreateWidgetBlueprint(const FString& AssetName, const FString& AssetPath);
+
+    /** Add a widget element (TextBlock, Button, Image, etc.) to the widget hierarchy */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString AddWidgetElement(UWidgetBlueprint* WidgetBlueprint,
+        const FString& ElementType, const FString& ElementName,
+        const FString& ParentName, const FString& SlotPropsJson);
+
+    /** Remove a widget element from the hierarchy */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString RemoveWidgetElement(UWidgetBlueprint* WidgetBlueprint, const FString& WidgetName);
+
+    /** Set properties on a widget element via JSON (supports slot_ prefixed slot properties) */
+    UFUNCTION(BlueprintCallable, Category="Editor|MCPython")
+    static FString SetWidgetProperties(UWidgetBlueprint* WidgetBlueprint,
+        const FString& WidgetName, const FString& PropertiesJson);
 };
