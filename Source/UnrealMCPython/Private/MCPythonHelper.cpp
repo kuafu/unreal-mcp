@@ -2280,6 +2280,11 @@ FString UMCPythonHelper::SetWidgetProperties(UWidgetBlueprint* WidgetBlueprint,
             Widget->SetIsEnabled(Pair.Value->AsBool());
             SetKeys.Add(Key);
         }
+        else if (Key == TEXT("is_variable"))
+        {
+            Widget->bIsVariable = Pair.Value->AsBool();
+            SetKeys.Add(Key);
+        }
         else if (Key == TEXT("tool_tip_text"))
         {
             Widget->SetToolTipText(FText::FromString(Pair.Value->AsString()));
